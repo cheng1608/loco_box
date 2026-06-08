@@ -2,12 +2,7 @@
 
 ## 下载
 
-在 [Releases](https://github.com/cheng1608/loco_box/releases) 页面下载：
-
-| 文件 | 说明 |
-|------|------|
-| `loco_box.exe` | Windows 单文件可执行程序，无需安装 Python |
-| `loco_box-*-source.zip` | 对应版本的源码压缩包 |
+在 [Releases](https://github.com/cheng1608/loco_box/releases) 页面下载 `loco_box.exe`。
 
 ## 首次启动
 
