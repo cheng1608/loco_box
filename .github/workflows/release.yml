@@ -61,16 +61,7 @@ jobs:
             | `loco_box.exe` | Windows 单文件可执行程序，无需安装 Python |
             | `loco_box-*-source.zip` | 对应版本的源码压缩包 |
 
-            ### 使用方法（exe）
-            1. 下载 `loco_box.exe`
-            2. 双击运行
-            3. 框选监控区域和截图区域，点击「开始」
-
-            ### 从源码运行
-            ```bash
-            pip install -r requirements.txt
-            python main.py
-            ```
+            使用方法见 [README](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/README.md)。
 
             ### 系统要求
             - Windows 10 / 11

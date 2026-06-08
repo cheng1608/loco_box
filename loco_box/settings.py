@@ -1,6 +1,7 @@
 """用户配置持久化。"""
 
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -10,7 +11,14 @@ import numpy as np
 from loco_box.image_ops import load_bgr, save_bgr
 from loco_box.types import Region
 
-SETTINGS_DIR = Path.home() / ".loco_box"
+
+def _app_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+SETTINGS_DIR = _app_root() / "data"
 SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 TEMPLATE_FILE = SETTINGS_DIR / "template.png"
 
