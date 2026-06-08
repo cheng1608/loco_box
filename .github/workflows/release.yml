@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build exe
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --onefile --windowed `
+            --name loco_box `
+            --collect-all customtkinter `
+            --hidden-import=PIL._tkinter_finder `
+            main.py
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/loco_box.exe
+          generate_release_notes: true
+          body: |
+            ## 幸运惊喜盒监控
+
+            Windows 64 位单文件可执行程序，无需安装 Python。
+
+            ### 使用方法
+            1. 下载 `loco_box.exe`
+            2. 双击运行
+            3. 框选监控区域和截图区域，点击「开始」
+
+            ### 系统要求
+            - Windows 10 / 11
+
+      - name: Upload build artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: loco_box-win64
+          path: dist/loco_box.exe
+          retention-days: 7
