@@ -13,7 +13,6 @@ class MatchAnalysis:
     strong_present: bool
     weak_present: bool
     score: float
-    detail: str
 
 
 def _screen_metrics(gray: np.ndarray, brightness: int) -> dict:
@@ -161,11 +160,11 @@ class WhiteTextMatcher:
         gray = bgr_to_gray(frame_bgr)
         metrics = _screen_metrics(gray, self.brightness)
         if _is_white_field(metrics, self.brightness):
-            return MatchAnalysis(True, False, False, 0.0, f"白屏 亮={metrics['bright_ratio']:.0%}")
+            return MatchAnalysis(True, False, False, 0.0)
 
         frame_stroke, frame_meta = extract_text_strokes(frame_bgr, self.brightness)
         if frame_meta["stroke_pixels"] == 0:
-            return MatchAnalysis(True, False, False, 0.0, "无笔画")
+            return MatchAnalysis(True, False, False, 0.0)
 
         inter = int(np.count_nonzero((frame_stroke > 0) & (self.tpl_stroke > 0)))
         union = int(np.count_nonzero((frame_stroke > 0) | (self.tpl_stroke > 0)))
@@ -177,10 +176,9 @@ class WhiteTextMatcher:
         tc, fc = self.tpl_char_count, frame_meta["char_count"]
         char_sim = 1.0 - min(1.0, abs(fc - tc) / max(tc, 1))
         score = 0.35 * coverage + 0.20 * iou + 0.20 * mean_band + 0.15 * layout + 0.10 * char_sim
-        detail = f"重合={coverage:.2f} 带={min_band:.2f}/{mean_band:.2f} 布局={layout:.2f} 块={fc}/{tc} 分={score:.2f}"
 
         if coverage < 0.12 or min_band < 0.10 or layout < 0.20:
-            return MatchAnalysis(True, False, False, score, detail)
+            return MatchAnalysis(True, False, False, score)
 
         strong = (
             score >= threshold + 0.08
@@ -195,4 +193,4 @@ class WhiteTextMatcher:
             and metrics["edge_density"] >= 0.014
         )
         weak = strong or (coverage >= 0.30 and min_band >= 0.22 and layout >= 0.35 and score >= threshold - 0.05)
-        return MatchAnalysis(False, strong, weak, score, detail)
+        return MatchAnalysis(False, strong, weak, score)

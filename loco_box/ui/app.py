@@ -1,12 +1,12 @@
 """CustomTkinter 主窗口。"""
 
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
 
 import customtkinter as ctk
 import numpy as np
 from tkinter import messagebox
 
-from loco_box.image_ops import grab_region, gray_to_bgr, render_bgr_preview
+from loco_box.image_ops import blank_preview, draw_text_top_right, grab_region, gray_to_bgr, render_bgr_preview
 from loco_box.matcher import WhiteTextMatcher
 from loco_box.monitor import MonitorThread
 from loco_box.region_selector import select_region
@@ -47,36 +47,35 @@ class App(ctk.CTk):
         self.matcher: Optional[WhiteTextMatcher] = None
         self.monitor: Optional[MonitorThread] = None
         self._preview_image: Optional[ctk.CTkImage] = None
+        self._box_count = 0
+        self._show_box_count_overlay = False
+        self._last_shot_bgr: Optional[np.ndarray] = None
 
         self._build_ui()
         self._load_settings()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self):
-        root = ctk.CTkFrame(self, fg_color=COLORS["bg"], corner_radius=0)
-        root.pack(fill="both", expand=True)
-
-        toolbar = ctk.CTkFrame(root, fg_color="transparent")
+        toolbar = ctk.CTkFrame(self, fg_color="transparent")
         toolbar.pack(fill="x", padx=H_PAD, pady=(10, 8))
         for col in range(5):
             toolbar.grid_columnconfigure(col, weight=1, uniform="toolbar")
 
         half_gap = BTN_GAP // 2
-        tools = [
+        for col, (text, cmd) in enumerate([
             ("监控区域", self._pick_template),
             ("截图区域", self._pick_region_b),
             ("预览", self._preview_template),
             ("测试", self._test_match),
-        ]
-        for col, (text, cmd) in enumerate(tools):
+        ]):
             pad = (0, half_gap) if col == 0 else (half_gap, half_gap)
-            self._ghost_button(toolbar, text, cmd, TOOL_BTN_W).grid(row=0, column=col, sticky="ew", padx=pad)
+            self._button(toolbar, text, cmd, TOOL_BTN_W).grid(row=0, column=col, sticky="ew", padx=pad)
 
-        self.btn_toggle = self._green_button(toolbar, "开始", self._toggle_monitor, TOOL_BTN_W)
+        self.btn_toggle = self._button(toolbar, "开始", self._toggle_monitor, TOOL_BTN_W, style="green")
         self.btn_toggle.grid(row=0, column=4, sticky="ew", padx=(half_gap, 0))
         self._set_monitor_button(False)
 
-        params_card = ctk.CTkFrame(root, fg_color=COLORS["surface"], corner_radius=CORNER_RADIUS, border_width=1, border_color=COLORS["border"])
+        params_card = ctk.CTkFrame(self, fg_color=COLORS["surface"], corner_radius=CORNER_RADIUS, border_width=1, border_color=COLORS["border"])
         params_card.pack(fill="x", padx=H_PAD, pady=(0, 8))
         params_inner = ctk.CTkFrame(params_card, fg_color="transparent")
         params_inner.pack(fill="x", padx=10, pady=8)
@@ -84,13 +83,13 @@ class App(ctk.CTk):
         self.entry_threshold = self._param_field(params_inner, "阈值", "0.45", 44)
         self.entry_brightness = self._param_field(params_inner, "亮度", "200", 36)
 
-        status_frame = ctk.CTkFrame(root, height=STATUS_HEIGHT, fg_color="transparent")
+        status_frame = ctk.CTkFrame(self, height=STATUS_HEIGHT, fg_color="transparent")
         status_frame.pack(fill="x", padx=H_PAD, pady=(0, 2))
         status_frame.pack_propagate(False)
         self.lbl_status = ctk.CTkLabel(status_frame, text="就绪", font=(FONT, 11), text_color=COLORS["text_muted"], anchor="w")
         self.lbl_status.pack(fill="both", expand=True)
 
-        self.preview_frame = ctk.CTkFrame(root, width=PREVIEW_W, height=PREVIEW_H, fg_color=COLORS["preview_bg"], corner_radius=CORNER_RADIUS, border_width=1, border_color=COLORS["border"])
+        self.preview_frame = ctk.CTkFrame(self, width=PREVIEW_W, height=PREVIEW_H, fg_color=COLORS["preview_bg"], corner_radius=CORNER_RADIUS, border_width=1, border_color=COLORS["border"])
         self.preview_frame.pack(padx=H_PAD, pady=(0, 12))
         self.preview_frame.pack_propagate(False)
         self.preview_label = ctk.CTkLabel(self.preview_frame, text="暂无截图", text_color=COLORS["text_muted"], font=(FONT, 12), fg_color="transparent")
@@ -99,11 +98,17 @@ class App(ctk.CTk):
         self.update_idletasks()
         self.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
 
-    def _ghost_button(self, parent, text: str, command, width: int) -> ctk.CTkButton:
+    def _button(
+        self,
+        parent,
+        text: str,
+        command,
+        width: int,
+        style: Literal["ghost", "green"] = "ghost",
+    ) -> ctk.CTkButton:
+        if style == "green":
+            return ctk.CTkButton(parent, text=text, command=command, width=width, height=BUTTON_HEIGHT, fg_color=COLORS["green"], hover_color=COLORS["green_hover"], text_color="#ffffff", corner_radius=6, font=(FONT, 12, "bold"))
         return ctk.CTkButton(parent, text=text, command=command, width=width, height=BUTTON_HEIGHT, fg_color=COLORS["surface_raised"], hover_color=COLORS["border"], text_color=COLORS["text"], corner_radius=6, font=(FONT, 12), border_width=1, border_color=COLORS["border"])
-
-    def _green_button(self, parent, text: str, command, width: int) -> ctk.CTkButton:
-        return ctk.CTkButton(parent, text=text, command=command, width=width, height=BUTTON_HEIGHT, fg_color=COLORS["green"], hover_color=COLORS["green_hover"], text_color="#ffffff", corner_radius=6, font=(FONT, 12, "bold"))
 
     def _toggle_monitor(self):
         if self.monitor and self.monitor.is_running():
@@ -131,6 +136,29 @@ class App(ctk.CTk):
             text = text[:41] + "…"
         self.lbl_status.configure(text=text)
 
+    def _show_preview_canvas(self, canvas, paint_count: Optional[bool] = None):
+        if paint_count is None:
+            paint_count = self._show_box_count_overlay
+        if paint_count:
+            draw_text_top_right(canvas, str(self._box_count))
+        self._preview_image = ctk.CTkImage(light_image=canvas, dark_image=canvas, size=(PREVIEW_W, PREVIEW_H))
+        self.preview_label.configure(image=self._preview_image, text="")
+        self.lift()
+
+    def _refresh_box_count_display(self):
+        if self._last_shot_bgr is not None:
+            self._display_image(self._last_shot_bgr)
+        else:
+            self._show_preview_canvas(blank_preview(PREVIEW_W, PREVIEW_H, COLORS["preview_bg"]))
+
+    def _on_monitor_screenshot(self, image_bgr: np.ndarray):
+        self._box_count += 1
+        self._last_shot_bgr = image_bgr
+        self._display_image(image_bgr)
+
+    def _display_image(self, image_bgr: np.ndarray, paint_count: Optional[bool] = None):
+        self._show_preview_canvas(render_bgr_preview(image_bgr, PREVIEW_W, PREVIEW_H, COLORS["preview_bg"]), paint_count)
+
     def _current_config(self) -> AppConfig:
         return AppConfig(
             delay=self.entry_delay.get(),
@@ -143,14 +171,14 @@ class App(ctk.CTk):
     def _persist_settings(self):
         save_config(self._current_config(), self.template_bgr)
 
-    def _rebuild_matcher(self):
-        self.matcher = WhiteTextMatcher(self.template_bgr, self._get_brightness()) if self.template_bgr is not None else None
-
     def _get_brightness(self) -> int:
         try:
             return int(self.entry_brightness.get())
         except ValueError:
             return 200
+
+    def _rebuild_matcher(self):
+        self.matcher = WhiteTextMatcher(self.template_bgr, self._get_brightness()) if self.template_bgr is not None else None
 
     def _set_template_region(self, region: Region):
         self.template_region = region
@@ -190,12 +218,6 @@ class App(ctk.CTk):
         else:
             self._set_status(f"已恢复 {parts}")
 
-    def _display_image(self, image_bgr: np.ndarray):
-        canvas = render_bgr_preview(image_bgr, PREVIEW_W, PREVIEW_H, COLORS["preview_bg"])
-        self._preview_image = ctk.CTkImage(light_image=canvas, dark_image=canvas, size=(PREVIEW_W, PREVIEW_H))
-        self.preview_label.configure(image=self._preview_image, text="")
-        self.lift()
-
     def _ensure_not_monitoring(self) -> bool:
         if self.monitor and self.monitor.is_running():
             messagebox.showwarning("提示", "请先停止监控再修改区域。")
@@ -233,21 +255,24 @@ class App(ctk.CTk):
 
         self._pick_region("框选截图区…", apply)
 
-    def _preview_template(self):
-        if self.template_bgr is None:
-            messagebox.showwarning("提示", "请先选择监控区域。")
-            return
+    def _require_valid_matcher(self, title: str = "错误") -> bool:
+        if not self.template_region:
+            messagebox.showerror(title, "请先选择监控区域。")
+            return False
         self._rebuild_matcher()
-        self._display_image(gray_to_bgr(self.matcher.tpl_mask))
+        if not self.matcher or not self.matcher.is_valid:
+            messagebox.showerror(title, "笔画结构不足，请重新框选或调低亮度。")
+            return False
+        return True
+
+    def _preview_template(self):
+        if not self._require_valid_matcher("提示"):
+            return
+        self._display_image(gray_to_bgr(self.matcher.tpl_mask), paint_count=False)
         self._set_status(f"预览 · {self.matcher.tpl_stroke_pixels}px")
 
     def _test_match(self):
-        if not self.template_region:
-            messagebox.showwarning("提示", "请先选择监控区域。")
-            return
-        self._rebuild_matcher()
-        if not self.matcher or not self.matcher.is_valid:
-            messagebox.showerror("提取失败", "笔画结构不足，请重新框选或调低亮度。")
+        if not self._require_valid_matcher():
             return
         try:
             threshold = float(self.entry_threshold.get())
@@ -259,12 +284,7 @@ class App(ctk.CTk):
         self._set_status(f"测试 {state} · {result.score:.2f}")
 
     def _validate_ready(self) -> bool:
-        if not self.template_region:
-            messagebox.showerror("错误", "请先选择监控区域。")
-            return False
-        self._rebuild_matcher()
-        if not self.matcher or not self.matcher.is_valid:
-            messagebox.showerror("错误", "笔画结构不足，请重新框选或调低亮度。")
+        if not self._require_valid_matcher():
             return False
         if not self.region_b:
             messagebox.showerror("错误", "请先选择截图区域。")
@@ -287,13 +307,18 @@ class App(ctk.CTk):
         if self.monitor:
             self.monitor.stop()
 
+        self._box_count = 0
+        self._last_shot_bgr = None
+        self._show_box_count_overlay = True
+        self._refresh_box_count_display()
+
         self.monitor = MonitorThread(
             monitor_region=self.template_region,
             shot_region=self.region_b,
             matcher=self.matcher,
             delay_sec=delay,
             threshold=threshold,
-            on_screenshot=lambda img: self.after(0, self._display_image, img),
+            on_screenshot=lambda img: self.after(0, self._on_monitor_screenshot, img),
             on_status=lambda msg: self.after(0, self._set_status, msg),
             on_error=lambda msg: self.after(0, self._on_monitor_error, msg),
         )

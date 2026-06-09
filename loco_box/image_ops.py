@@ -5,7 +5,7 @@ from typing import Optional, Union
 
 import mss
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from loco_box.types import Region
 
@@ -47,16 +47,44 @@ def load_bgr(path: Union[Path, str]) -> Optional[np.ndarray]:
         return None
 
 
+def blank_preview(width: int, height: int, bg_hex: str) -> Image.Image:
+    bg_rgb = tuple(int(bg_hex.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
+    return Image.new("RGB", (width, height), bg_rgb)
+
+
 def render_bgr_preview(bgr: np.ndarray, width: int, height: int, bg_hex: str) -> Image.Image:
     pil_img = Image.fromarray(bgr_to_rgb(bgr))
     scale = min(width / pil_img.width, height / pil_img.height)
     new_size = (max(1, int(pil_img.width * scale)), max(1, int(pil_img.height * scale)))
     if new_size != pil_img.size:
         pil_img = pil_img.resize(new_size, Image.Resampling.LANCZOS)
-    bg_rgb = tuple(int(bg_hex.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
-    canvas = Image.new("RGB", (width, height), bg_rgb)
+    canvas = blank_preview(width, height, bg_hex)
     canvas.paste(pil_img, ((width - pil_img.width) // 2, (height - pil_img.height) // 2))
     return canvas
+
+
+def draw_text_top_right(
+    image: Image.Image,
+    text: str,
+    *,
+    margin: int = 10,
+    fill: str = "#ffffff",
+    font_size: int = 22,
+) -> Image.Image:
+    draw = ImageDraw.Draw(image)
+    font = None
+    for name in ("segoeuib.ttf", "segoeui.ttf", "arialbd.ttf", "arial.ttf"):
+        try:
+            font = ImageFont.truetype(name, font_size)
+            break
+        except OSError:
+            continue
+    if font is None:
+        font = ImageFont.load_default()
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw = bbox[2] - bbox[0]
+    draw.text((image.width - tw - margin, 8), text, fill=fill, font=font)
+    return image
 
 
 def gaussian_blur_gray(gray: np.ndarray, radius: int = 2) -> np.ndarray:
