@@ -62,22 +62,22 @@ class MonitorThread:
                     appear_hits = appear_hits + 1 if result.strong_present else 0
                     if appear_hits >= self.CONFIRM_APPEAR:
                         watching, appear_hits, absent_hits = True, 0, 0
-                        self.on_status(f"文字已确认 | 监控消失 | {result.detail}")
+                        self.on_status("已出现，监控中")
                     else:
-                        hint = f" 强匹配{appear_hits}/{self.CONFIRM_APPEAR}" if appear_hits else ""
-                        self.on_status(f"等待出现{hint} | {result.detail}")
+                        hint = f" {appear_hits}/{self.CONFIRM_APPEAR}" if appear_hits else ""
+                        self.on_status(f"等待出现{hint}")
                 else:
                     absent_hits = absent_hits + 1 if result.absent or not result.weak_present else 0
                     if absent_hits >= self.CONFIRM_ABSENT:
-                        self.on_status(f"确认消失 | {result.detail} | 等待 {self.delay_sec}s 后截图...")
+                        self.on_status(f"消失确认 · {self.delay_sec}s后截图")
                         if self._stop.wait(self.delay_sec):
                             break
                         self.on_screenshot(grab_region(self.shot_region))
                         watching, appear_hits, absent_hits = False, 0, 0
-                        self.on_status(f"截图完成 | 等待下次出现 | {result.detail}")
+                        self.on_status("截图完成")
                     else:
-                        hint = f" 消失确认{absent_hits}/{self.CONFIRM_ABSENT}" if absent_hits else ""
-                        self.on_status(f"监控消失{hint} | {result.detail}")
+                        hint = f" {absent_hits}/{self.CONFIRM_ABSENT}" if absent_hits else ""
+                        self.on_status(f"消失中{hint}")
             except Exception as exc:
                 self.on_error(str(exc))
                 break
@@ -85,4 +85,4 @@ class MonitorThread:
             if self._stop.wait(self.POLL_INTERVAL):
                 break
 
-        self.on_status("监控已停止")
+        self.on_status("已停止")

@@ -13,7 +13,6 @@ from loco_box.region_selector import select_region
 from loco_box.settings import AppConfig, load_config, load_template_image, save_config
 from loco_box.types import Region
 from loco_box.ui.theme import (
-    ACTION_BTN_W,
     BTN_GAP,
     BUTTON_HEIGHT,
     COLORS,
@@ -22,7 +21,6 @@ from loco_box.ui.theme import (
     H_PAD,
     PREVIEW_H,
     PREVIEW_W,
-    ROW_GAP,
     STATUS_HEIGHT,
     TOOL_BTN_W,
     WINDOW_ALPHA,
@@ -60,26 +58,23 @@ class App(ctk.CTk):
 
         toolbar = ctk.CTkFrame(root, fg_color="transparent")
         toolbar.pack(fill="x", padx=H_PAD, pady=(10, 8))
-        for col in range(4):
+        for col in range(5):
             toolbar.grid_columnconfigure(col, weight=1, uniform="toolbar")
 
         half_gap = BTN_GAP // 2
-        for col, (text, cmd) in enumerate([
+        tools = [
             ("监控区域", self._pick_template),
             ("截图区域", self._pick_region_b),
             ("预览", self._preview_template),
             ("测试", self._test_match),
-        ]):
-            self._ghost_button(toolbar, text, cmd, TOOL_BTN_W).grid(
-                row=0, column=col, sticky="ew",
-                padx=(0, half_gap) if col == 0 else (half_gap, 0 if col == 3 else half_gap),
-            )
+        ]
+        for col, (text, cmd) in enumerate(tools):
+            pad = (0, half_gap) if col == 0 else (half_gap, half_gap)
+            self._ghost_button(toolbar, text, cmd, TOOL_BTN_W).grid(row=0, column=col, sticky="ew", padx=pad)
 
-        self.btn_start = self._green_button(toolbar, "开始", self._start, ACTION_BTN_W)
-        self.btn_start.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(ROW_GAP, 0), padx=(0, half_gap))
-        self.btn_stop = self._ghost_button(toolbar, "停止", self._stop, ACTION_BTN_W)
-        self.btn_stop.grid(row=1, column=2, columnspan=2, sticky="ew", pady=(ROW_GAP, 0), padx=(half_gap, 0))
-        self._set_monitor_buttons(False)
+        self.btn_toggle = self._green_button(toolbar, "开始", self._toggle_monitor, TOOL_BTN_W)
+        self.btn_toggle.grid(row=0, column=4, sticky="ew", padx=(half_gap, 0))
+        self._set_monitor_button(False)
 
         params_card = ctk.CTkFrame(root, fg_color=COLORS["surface"], corner_radius=CORNER_RADIUS, border_width=1, border_color=COLORS["border"])
         params_card.pack(fill="x", padx=H_PAD, pady=(0, 8))
@@ -89,14 +84,11 @@ class App(ctk.CTk):
         self.entry_threshold = self._param_field(params_inner, "阈值", "0.45", 44)
         self.entry_brightness = self._param_field(params_inner, "亮度", "200", 36)
 
-        self.lbl_regions = ctk.CTkLabel(root, text="监控: 未设置  ·  截图: 未设置", font=(FONT, 11), text_color=COLORS["text_muted"], anchor="w")
-        self.lbl_regions.pack(fill="x", padx=H_PAD, pady=(0, 4))
-
         status_frame = ctk.CTkFrame(root, height=STATUS_HEIGHT, fg_color="transparent")
         status_frame.pack(fill="x", padx=H_PAD, pady=(0, 2))
         status_frame.pack_propagate(False)
-        self.lbl_status = ctk.CTkLabel(status_frame, text="就绪", font=(FONT, 11), text_color=COLORS["text_muted"], anchor="nw", wraplength=PREVIEW_W, justify="left")
-        self.lbl_status.pack(fill="both", expand=True, anchor="nw")
+        self.lbl_status = ctk.CTkLabel(status_frame, text="就绪", font=(FONT, 11), text_color=COLORS["text_muted"], anchor="w")
+        self.lbl_status.pack(fill="both", expand=True)
 
         self.preview_frame = ctk.CTkFrame(root, width=PREVIEW_W, height=PREVIEW_H, fg_color=COLORS["preview_bg"], corner_radius=CORNER_RADIUS, border_width=1, border_color=COLORS["border"])
         self.preview_frame.pack(padx=H_PAD, pady=(0, 12))
@@ -113,13 +105,17 @@ class App(ctk.CTk):
     def _green_button(self, parent, text: str, command, width: int) -> ctk.CTkButton:
         return ctk.CTkButton(parent, text=text, command=command, width=width, height=BUTTON_HEIGHT, fg_color=COLORS["green"], hover_color=COLORS["green_hover"], text_color="#ffffff", corner_radius=6, font=(FONT, 12, "bold"))
 
-    def _set_monitor_buttons(self, running: bool):
-        if running:
-            self.btn_start.configure(state="disabled", fg_color=COLORS["surface_raised"], hover_color=COLORS["border"], text_color=COLORS["text_muted"], border_width=1, border_color=COLORS["border"])
-            self.btn_stop.configure(state="normal", fg_color=COLORS["danger"], hover_color=COLORS["danger_hover"], text_color="#ffffff", border_width=0)
+    def _toggle_monitor(self):
+        if self.monitor and self.monitor.is_running():
+            self._stop()
         else:
-            self.btn_start.configure(state="normal", fg_color=COLORS["green"], hover_color=COLORS["green_hover"], text_color="#ffffff", border_width=0)
-            self.btn_stop.configure(state="disabled", fg_color=COLORS["surface_raised"], hover_color=COLORS["border"], text_color=COLORS["text_muted"], border_width=1, border_color=COLORS["border"])
+            self._start()
+
+    def _set_monitor_button(self, running: bool):
+        if running:
+            self.btn_toggle.configure(text="停止", fg_color=COLORS["danger"], hover_color=COLORS["danger_hover"], text_color="#ffffff", border_width=0)
+        else:
+            self.btn_toggle.configure(text="开始", fg_color=COLORS["green"], hover_color=COLORS["green_hover"], text_color="#ffffff", border_width=0)
 
     def _param_field(self, parent, label: str, default: str, width: int) -> ctk.CTkEntry:
         wrap = ctk.CTkFrame(parent, fg_color="transparent")
@@ -131,6 +127,8 @@ class App(ctk.CTk):
         return entry
 
     def _set_status(self, text: str):
+        if len(text) > 42:
+            text = text[:41] + "…"
         self.lbl_status.configure(text=text)
 
     def _current_config(self) -> AppConfig:
@@ -184,20 +182,13 @@ class App(ctk.CTk):
 
         if not restored:
             return
-        self._update_region_labels()
         parts = " · ".join(restored)
         if self.matcher and self.matcher.is_valid and self.region_b:
-            self._set_status(f"已恢复上次配置 ({parts})，可直接开始")
+            self._set_status(f"已恢复 {parts}")
         elif cfg.template_region:
-            self._set_status(f"已恢复区域 ({parts})，模板无效请重新框选监控区域")
+            self._set_status(f"已恢复 {parts}，模板无效")
         else:
-            self._set_status(f"已恢复上次配置 ({parts})")
-
-    def _fmt_region(self, region: Optional[Region]) -> str:
-        return f"{region['width']}×{region['height']}" if region else "未设置"
-
-    def _update_region_labels(self):
-        self.lbl_regions.configure(text=f"监控: {self._fmt_region(self.template_region)}  ·  截图: {self._fmt_region(self.region_b)}")
+            self._set_status(f"已恢复 {parts}")
 
     def _display_image(self, image_bgr: np.ndarray):
         canvas = render_bgr_preview(image_bgr, PREVIEW_W, PREVIEW_H, COLORS["preview_bg"])
@@ -226,23 +217,21 @@ class App(ctk.CTk):
     def _pick_template(self):
         def apply(region: Region):
             self._set_template_region(region)
-            self._update_region_labels()
             self._persist_settings()
             if self.matcher and self.matcher.is_valid:
-                self._set_status(f"监控区域已设置 · 笔画 {self.matcher.tpl_stroke_pixels} · 块 {self.matcher.tpl_char_count}")
+                self._set_status(f"监控区 OK · {self.matcher.tpl_stroke_pixels}px")
             else:
-                self._set_status("笔画不足，请框紧五个白字或调低亮度")
+                self._set_status("笔画不足")
 
-        self._pick_region("请框选监控区域...", apply)
+        self._pick_region("框选监控区…", apply)
 
     def _pick_region_b(self):
         def apply(region: Region):
             self.region_b = region
-            self._update_region_labels()
             self._persist_settings()
-            self._set_status("截图区域已设置")
+            self._set_status("截图区 OK")
 
-        self._pick_region("请框选截图区域...", apply)
+        self._pick_region("框选截图区…", apply)
 
     def _preview_template(self):
         if self.template_bgr is None:
@@ -250,7 +239,7 @@ class App(ctk.CTk):
             return
         self._rebuild_matcher()
         self._display_image(gray_to_bgr(self.matcher.tpl_mask))
-        self._set_status(f"笔画预览 · 像素 {self.matcher.tpl_stroke_pixels} · 块 {self.matcher.tpl_char_count}")
+        self._set_status(f"预览 · {self.matcher.tpl_stroke_pixels}px")
 
     def _test_match(self):
         if not self.template_region:
@@ -266,8 +255,8 @@ class App(ctk.CTk):
             messagebox.showerror("错误", "阈值必须是有效数字。")
             return
         result = self.matcher.analyze(grab_region(self.template_region), threshold)
-        state = "强匹配" if result.strong_present else "弱匹配" if result.weak_present else "未匹配"
-        self._set_status(f"测试 · {state} · {result.detail}")
+        state = "强" if result.strong_present else "弱" if result.weak_present else "无"
+        self._set_status(f"测试 {state} · {result.score:.2f}")
 
     def _validate_ready(self) -> bool:
         if not self.template_region:
@@ -310,14 +299,14 @@ class App(ctk.CTk):
         )
         self._persist_settings()
         self.monitor.start()
-        self._set_monitor_buttons(True)
-        self._set_status("监控已启动")
+        self._set_monitor_button(True)
+        self._set_status("监控中")
 
     def _stop(self):
         if self.monitor:
             self.monitor.stop()
-        self._set_monitor_buttons(False)
-        self._set_status("监控已停止")
+        self._set_monitor_button(False)
+        self._set_status("已停止")
 
     def _on_monitor_error(self, msg: str):
         messagebox.showerror("监控错误", msg)
