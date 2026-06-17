@@ -33,15 +33,28 @@ class SerialBridge:
         self._ser: Optional[serial.Serial] = None
 
     def connect(self) -> bool:
-        """打开串口连接，返回是否成功。"""
+        """打开串口连接，返回是否成功。支持重试。"""
         if serial is None:
             return False
-        try:
-            self._ser = serial.Serial(self.port, self.baudrate, timeout=1)
-            time.sleep(0.15)  # Arduino 复位等待
-            return True
-        except (OSError, serial.SerialException):
-            return False
+        port = self.port
+        # 如果是 AUTO，先自动检测
+        if port.upper() == "AUTO":
+            found = SerialBridge.find_arduino()
+            if found:
+                port = found
+            else:
+                return False
+        self.port = port
+
+        for attempt in range(3):
+            try:
+                self._ser = serial.Serial(port, self.baudrate, timeout=1)
+                time.sleep(0.5)  # Arduino 复位等待
+                return True
+            except (OSError, serial.SerialException):
+                if attempt < 2:
+                    time.sleep(1)  # 等 1 秒再试
+        return False
 
     def disconnect(self):
         """关闭串口连接。"""

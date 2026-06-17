@@ -1,4 +1,4 @@
-"""CustomTkinter 主窗口。"""
+"""CustomTkinter 主窗口 — 使用 MAA 式 PipelineEngine。"""
 
 from typing import Callable, Literal, Optional
 
@@ -6,11 +6,12 @@ import customtkinter as ctk
 import numpy as np
 from tkinter import messagebox
 
+from loco_box.controller import Controller
 from loco_box.image_ops import blank_preview, draw_text_top_right, grab_region, gray_to_bgr, render_bgr_preview
 from loco_box.matcher import WhiteTextMatcher
-from loco_box.monitor import MonitorThread
+from loco_box.pipeline.engine import PipelineCallbacks, PipelineEngine
+from loco_box.pipeline.loader import PipelineLoader
 from loco_box.region_selector import select_region
-from loco_box.serial_bridge import SerialBridge
 from loco_box.settings import AppConfig, load_config, load_template_image, save_config
 from loco_box.types import Region
 from loco_box.ui.theme import (
@@ -46,18 +47,21 @@ class App(ctk.CTk):
         self.region_b: Optional[Region] = None
         self.template_bgr: Optional[np.ndarray] = None
         self.matcher: Optional[WhiteTextMatcher] = None
-        self.monitor: Optional[MonitorThread] = None
         self._preview_image: Optional[ctk.CTkImage] = None
         self._box_count = 0
         self._show_box_count_overlay = False
         self._last_shot_bgr: Optional[np.ndarray] = None
         self._trigger_timer_id: Optional[str] = None
-        self._bridge: Optional[SerialBridge] = None
+
+        # MAA 式架构
+        self._controller: Optional[Controller] = None
+        self._engine: Optional[PipelineEngine] = None
 
         self._build_ui()
         self._load_settings()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    # ─── UI 构建（同 v1）─────────────────────────
     def _build_ui(self):
         toolbar = ctk.CTkFrame(self, fg_color="transparent")
         toolbar.pack(fill="x", padx=H_PAD, pady=(10, 8))
@@ -103,35 +107,22 @@ class App(ctk.CTk):
         self.update_idletasks()
         self.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
 
-    def _button(
-        self,
-        parent,
-        text: str,
-        command,
-        width: int,
-        style: Literal["ghost", "green"] = "ghost",
-    ) -> ctk.CTkButton:
+    def _button(self, parent, text: str, command, width: int, style: Literal["ghost", "green"] = "ghost") -> ctk.CTkButton:
         if style == "green":
-            return ctk.CTkButton(parent, text=text, command=command, width=width, height=BUTTON_HEIGHT, fg_color=COLORS["green"], hover_color=COLORS["green_hover"], text_color="#ffffff", corner_radius=6, font=(FONT, 12, "bold"))
-        return ctk.CTkButton(parent, text=text, command=command, width=width, height=BUTTON_HEIGHT, fg_color=COLORS["surface_raised"], hover_color=COLORS["border"], text_color=COLORS["text"], corner_radius=6, font=(FONT, 12), border_width=1, border_color=COLORS["border"])
-
-    def _toggle_monitor(self):
-        if self.monitor and self.monitor.is_running():
-            self._stop()
-        else:
-            self._start()
-
-    def _set_monitor_button(self, running: bool):
-        if running:
-            self.btn_toggle.configure(text="停止", fg_color=COLORS["danger"], hover_color=COLORS["danger_hover"], text_color="#ffffff", border_width=0)
-        else:
-            self.btn_toggle.configure(text="开始", fg_color=COLORS["green"], hover_color=COLORS["green_hover"], text_color="#ffffff", border_width=0)
+            return ctk.CTkButton(parent, text=text, command=command, width=width, height=BUTTON_HEIGHT,
+                                 fg_color=COLORS["green"], hover_color=COLORS["green_hover"],
+                                 text_color="#ffffff", corner_radius=6, font=(FONT, 12, "bold"))
+        return ctk.CTkButton(parent, text=text, command=command, width=width, height=BUTTON_HEIGHT,
+                             fg_color=COLORS["surface_raised"], hover_color=COLORS["border"],
+                             text_color=COLORS["text"], corner_radius=6, font=(FONT, 12),
+                             border_width=1, border_color=COLORS["border"])
 
     def _param_field(self, parent, label: str, default: str, width: int) -> ctk.CTkEntry:
         wrap = ctk.CTkFrame(parent, fg_color="transparent")
         wrap.pack(side="left")
         ctk.CTkLabel(wrap, text=label, font=(FONT, 11), text_color=COLORS["text_muted"], width=32).pack(side="left")
-        entry = ctk.CTkEntry(wrap, width=width, height=26, corner_radius=6, fg_color=COLORS["surface_raised"], border_color=COLORS["border"], border_width=1, font=(FONT, 12), justify="center")
+        entry = ctk.CTkEntry(wrap, width=width, height=26, corner_radius=6, fg_color=COLORS["surface_raised"],
+                             border_color=COLORS["border"], border_width=1, font=(FONT, 12), justify="center")
         entry.insert(0, default)
         entry.pack(side="left", padx=(2, 10))
         return entry
@@ -141,6 +132,154 @@ class App(ctk.CTk):
             text = text[:41] + "…"
         self.lbl_status.configure(text=text)
 
+    def _toggle_monitor(self):
+        if self._engine and self._engine.is_running():
+            self._stop()
+        else:
+            self._start()
+
+    def _set_monitor_button(self, running: bool):
+        if running:
+            self.btn_toggle.configure(text="停止", fg_color=COLORS["danger"], hover_color=COLORS["danger_hover"],
+                                      text_color="#ffffff", border_width=0)
+        else:
+            self.btn_toggle.configure(text="开始", fg_color=COLORS["green"], hover_color=COLORS["green_hover"],
+                                      text_color="#ffffff", border_width=0)
+
+    # ─── 核心：构建 Pipeline 并启动 ─────────────────
+    def _start(self):
+        if not self._validate_ready():
+            return
+
+        # 连接 Controller（Arduino）— 自动检测 + 重试
+        self._controller = Controller("AUTO")
+        if self._controller.connect():
+            self.entry_com.delete(0, "end")
+            self.entry_com.insert(0, self._controller.port)
+            self._set_status(f"Arduino 已连接 · {self._controller.port}")
+        else:
+            self._set_status(f"连接失败 · {self._controller.port}")
+
+        # 构建 Pipeline 定义（程序化生成，等同 surprise_box.json）
+        try:
+            brightness = int(self.entry_brightness.get())
+            threshold = float(self.entry_threshold.get())
+            shot_delay = float(self.entry_delay.get())
+            trigger_delay = float(self.entry_trigger.get())
+        except ValueError:
+            messagebox.showerror("错误", "参数必须是有效数字。")
+            return
+
+        pipeline_def = {
+            "name": "Surprise Box Monitor",
+            "regions": {
+                "monitor": self.template_region,
+                "shot": self.region_b,
+            },
+            "tasks": [
+                {
+                    "name": "Wait Box Appear",
+                    "type": "recognize_then_act",
+                    "recognition": {
+                        "type": "white_text",
+                        "region": "monitor",
+                        "params": {
+                            "brightness": brightness,
+                            "threshold": threshold,
+                            "mode": "appear",
+                            "confirm_count": 4,
+                            "template": "surprise_box.png",
+                        },
+                    },
+                    "action": {"type": "log", "params": {"message": "Box appeared!"}},
+                    "next": "Wait Box Disappear",
+                    "timeout_ms": 0,
+                    "poll_interval_ms": 300,
+                },
+                {
+                    "name": "Wait Box Disappear",
+                    "type": "recognize_then_act",
+                    "recognition": {
+                        "type": "white_text",
+                        "region": "monitor",
+                        "params": {
+                            "brightness": brightness,
+                            "threshold": threshold,
+                            "mode": "disappear",
+                            "confirm_count": 3,
+                            "template": "surprise_box.png",
+                        },
+                    },
+                    "action": {
+                        "type": "sequence",
+                        "params": {
+                            "actions": [
+                                {"type": "wait", "params": {"duration_s": shot_delay}},
+                                {"type": "serial_key", "params": {"key": "1"}},
+                                {"type": "screenshot", "params": {"region": "shot", "save_dir": "data/shots"}},
+                            ]
+                        },
+                    },
+                    "next": "Wait Box Appear",
+                    "timeout_ms": 120000,
+                    "poll_interval_ms": 300,
+                },
+            ],
+            "max_iterations": 9999,
+        }
+
+        # 重置计数
+        self._box_count = 0
+        self._last_shot_bgr = None
+        self._show_box_count_overlay = True
+        self._refresh_box_count_display()
+
+        # 启动引擎
+        self._engine = PipelineEngine(
+            pipeline_def,
+            self._controller,
+            callbacks=PipelineCallbacks(
+                on_status=lambda msg: self.after(0, self._set_status, msg),
+                on_screenshot=lambda img: self.after(0, self._on_monitor_screenshot, img),
+                on_error=lambda msg: self.after(0, self._on_monitor_error, msg),
+            ),
+        )
+        self._engine.run_async()
+        self._persist_settings()
+        self._set_monitor_button(True)
+        self._set_status("监控中")
+
+    def _stop(self):
+        if self._engine:
+            self._engine.stop()
+        if self._trigger_timer_id is not None:
+            self.after_cancel(self._trigger_timer_id)
+            self._trigger_timer_id = None
+        if self._controller:
+            self._controller.disconnect()
+            self._controller = None
+        self._set_monitor_button(False)
+        self._set_status("已停止")
+
+    def _on_close(self):
+        if self._engine:
+            self._engine.stop()
+        if self._controller:
+            self._controller.disconnect()
+        self._persist_settings()
+        self.destroy()
+
+    # ─── 回调：截图 ────────────────────────────────
+    def _on_monitor_screenshot(self, image_bgr: np.ndarray):
+        self._box_count += 1
+        self._last_shot_bgr = image_bgr
+        self._display_image(image_bgr)
+
+    def _on_monitor_error(self, msg: str):
+        messagebox.showerror("监控错误", msg)
+        self._stop()
+
+    # ─── 预览与显示（同 v1）─────────────────────────
     def _show_preview_canvas(self, canvas, paint_count: Optional[bool] = None):
         if paint_count is None:
             paint_count = self._show_box_count_overlay
@@ -156,46 +295,10 @@ class App(ctk.CTk):
         else:
             self._show_preview_canvas(blank_preview(PREVIEW_W, PREVIEW_H, COLORS["preview_bg"]))
 
-    def _on_box_appear(self):
-        """盒子出现时：预约按键触发。"""
-        if self._trigger_timer_id is not None:
-            self.after_cancel(self._trigger_timer_id)
-            self._trigger_timer_id = None
-        try:
-            delay_ms = int(float(self.entry_trigger.get()) * 1000)
-        except (ValueError, TypeError):
-            delay_ms = 5000
-        if delay_ms < 0:
-            delay_ms = 0
-        self._trigger_timer_id = self.after(delay_ms, self._do_trigger)
-        self._set_status(f"按键已预约 · {delay_ms / 1000:.1f}s")
-
-    def _do_trigger(self):
-        """到时间：通过 Arduino 发送按键。"""
-        self._trigger_timer_id = None
-        if not self._bridge or not self._bridge.is_connected():
-            # Try reconnecting
-            com = self.entry_com.get().strip()
-            if com.upper() == "AUTO":
-                com = SerialBridge.find_arduino() or com
-            if self._bridge:
-                self._bridge.disconnect()
-            self._bridge = SerialBridge(com)
-            if not self._bridge.connect():
-                self._set_status("Arduino 断连")
-                return
-        # Send single press
-        self._bridge.press_key("1")
-        self._set_status("按键已发送")
-
-    def _on_monitor_screenshot(self, image_bgr: np.ndarray):
-        self._box_count += 1
-        self._last_shot_bgr = image_bgr
-        self._display_image(image_bgr)
-
     def _display_image(self, image_bgr: np.ndarray, paint_count: Optional[bool] = None):
         self._show_preview_canvas(render_bgr_preview(image_bgr, PREVIEW_W, PREVIEW_H, COLORS["preview_bg"]), paint_count)
 
+    # ─── 配置（同 v1）─────────────────────────────
     def _current_config(self) -> AppConfig:
         return AppConfig(
             delay=self.entry_delay.get(),
@@ -230,7 +333,10 @@ class App(ctk.CTk):
 
     def _load_settings(self):
         cfg = load_config()
-        for key, entry in (("delay", self.entry_delay), ("threshold", self.entry_threshold), ("brightness", self.entry_brightness), ("trigger_delay", self.entry_trigger), ("com_port", self.entry_com)):
+        fields = ("delay", self.entry_delay), ("threshold", self.entry_threshold), \
+                 ("brightness", self.entry_brightness), ("trigger_delay", self.entry_trigger), \
+                 ("com_port", self.entry_com)
+        for key, entry in fields:
             entry.delete(0, "end")
             entry.insert(0, getattr(cfg, key))
 
@@ -258,7 +364,7 @@ class App(ctk.CTk):
             self._set_status(f"已恢复 {parts}")
 
     def _ensure_not_monitoring(self) -> bool:
-        if self.monitor and self.monitor.is_running():
+        if self._engine and self._engine.is_running():
             messagebox.showwarning("提示", "请先停止监控再修改区域。")
             return False
         return True
@@ -268,11 +374,9 @@ class App(ctk.CTk):
             return
         self._set_status(prompt)
         self.withdraw()
-
         def on_selected(region: Region):
             self.deiconify()
             on_apply(region)
-
         select_region(on_selected, lambda: (self.deiconify(), self._set_status("已取消")))
 
     def _pick_template(self):
@@ -280,10 +384,15 @@ class App(ctk.CTk):
             self._set_template_region(region)
             self._persist_settings()
             if self.matcher and self.matcher.is_valid:
+                # 保存模板到 data/templates/ 供 Pipeline 使用
+                from loco_box.image_ops import save_bgr
+                from pathlib import Path
+                tmpl_dir = Path(__file__).resolve().parent.parent.parent / "data" / "templates"
+                tmpl_dir.mkdir(parents=True, exist_ok=True)
+                save_bgr(tmpl_dir / "surprise_box.png", self.template_bgr)
                 self._set_status(f"监控区 OK · {self.matcher.tpl_stroke_pixels}px")
             else:
                 self._set_status("笔画不足")
-
         self._pick_region("框选监控区…", apply)
 
     def _pick_region_b(self):
@@ -291,7 +400,6 @@ class App(ctk.CTk):
             self.region_b = region
             self._persist_settings()
             self._set_status("截图区 OK")
-
         self._pick_region("框选截图区…", apply)
 
     def _require_valid_matcher(self, title: str = "错误") -> bool:
@@ -329,75 +437,3 @@ class App(ctk.CTk):
             messagebox.showerror("错误", "请先选择截图区域。")
             return False
         return True
-
-    def _start(self):
-        if not self._validate_ready():
-            return
-        try:
-            delay = float(self.entry_delay.get())
-            threshold = float(self.entry_threshold.get())
-        except ValueError:
-            messagebox.showerror("错误", "延迟和阈值必须是有效数字。")
-            return
-        if delay < 0:
-            messagebox.showerror("错误", "延迟不能为负数。")
-            return
-
-        if self.monitor:
-            self.monitor.stop()
-
-        # Connect to Arduino: always auto-detect first, fallback to configured port
-        com = SerialBridge.find_arduino() or self.entry_com.get().strip()
-        self._bridge = SerialBridge(com)
-        if self._bridge.connect():
-            self.entry_com.delete(0, "end")
-            self.entry_com.insert(0, com)
-            self._set_status(f"Arduino 已连接 · {com}")
-        else:
-            self._set_status(f"连接失败 · {com}")
-            # Don't save the failed COM port
-
-        self._box_count = 0
-        self._last_shot_bgr = None
-        self._show_box_count_overlay = True
-        self._refresh_box_count_display()
-
-        self.monitor = MonitorThread(
-            monitor_region=self.template_region,
-            shot_region=self.region_b,
-            matcher=self.matcher,
-            delay_sec=delay,
-            threshold=threshold,
-            on_screenshot=lambda img: self.after(0, self._on_monitor_screenshot, img),
-            on_status=lambda msg: self.after(0, self._set_status, msg),
-            on_error=lambda msg: self.after(0, self._on_monitor_error, msg),
-            on_box_appear=lambda: self.after(0, self._on_box_appear),
-        )
-        self._persist_settings()
-        self.monitor.start()
-        self._set_monitor_button(True)
-        self._set_status("监控中")
-
-    def _stop(self):
-        if self.monitor:
-            self.monitor.stop()
-        if self._trigger_timer_id is not None:
-            self.after_cancel(self._trigger_timer_id)
-            self._trigger_timer_id = None
-        if self._bridge:
-            self._bridge.disconnect()
-            self._bridge = None
-        self._set_monitor_button(False)
-        self._set_status("已停止")
-
-    def _on_monitor_error(self, msg: str):
-        messagebox.showerror("监控错误", msg)
-        self._stop()
-
-    def _on_close(self):
-        if self.monitor:
-            self.monitor.stop()
-        if self._bridge:
-            self._bridge.disconnect()
-        self._persist_settings()
-        self.destroy()

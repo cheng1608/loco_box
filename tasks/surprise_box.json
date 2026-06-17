@@ -1,0 +1,61 @@
+{
+  "name": "Surprise Box Monitor",
+  "description": "监控幸运惊喜盒：出现→等待消失→截图+按键1",
+  "regions": {
+    "monitor": {"left": 2240, "top": 62, "width": 129, "height": 28},
+    "shot": {"left": 1516, "top": 445, "width": 110, "height": 260}
+  },
+  "tasks": [
+    {
+      "name": "Wait Box Appear",
+      "type": "recognize_then_act",
+      "recognition": {
+        "type": "white_text",
+        "region": "monitor",
+        "params": {
+          "brightness": 200,
+          "threshold": 0.45,
+          "mode": "appear",
+          "confirm_count": 4,
+          "template": "surprise_box.png"
+        }
+      },
+      "action": {
+        "type": "log",
+        "params": {"message": "Box appeared!"}
+      },
+      "next": "Wait Box Disappear",
+      "timeout_ms": 0,
+      "poll_interval_ms": 300
+    },
+    {
+      "name": "Wait Box Disappear",
+      "type": "recognize_then_act",
+      "recognition": {
+        "type": "white_text",
+        "region": "monitor",
+        "params": {
+          "brightness": 200,
+          "threshold": 0.45,
+          "mode": "disappear",
+          "confirm_count": 3,
+          "template": "surprise_box.png"
+        }
+      },
+      "action": {
+        "type": "sequence",
+        "params": {
+          "actions": [
+            {"type": "wait", "params": {"duration_ms": 1200}},
+            {"type": "serial_key", "params": {"key": "1"}},
+            {"type": "screenshot", "params": {"region": "shot", "save_dir": "data/shots"}}
+          ]
+        }
+      },
+      "next": "Wait Box Appear",
+      "timeout_ms": 120000,
+      "poll_interval_ms": 300
+    }
+  ],
+  "max_iterations": 9999
+}
