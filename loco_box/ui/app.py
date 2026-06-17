@@ -10,6 +10,7 @@ from loco_box.image_ops import blank_preview, draw_text_top_right, grab_region, 
 from loco_box.matcher import WhiteTextMatcher
 from loco_box.monitor import MonitorThread
 from loco_box.region_selector import select_region
+from loco_box.serial_bridge import SerialBridge
 from loco_box.settings import AppConfig, load_config, load_template_image, save_config
 from loco_box.types import Region
 from loco_box.ui.theme import (
@@ -50,6 +51,8 @@ class App(ctk.CTk):
         self._box_count = 0
         self._show_box_count_overlay = False
         self._last_shot_bgr: Optional[np.ndarray] = None
+        self._trigger_timer_id: Optional[str] = None
+        self._bridge: Optional[SerialBridge] = None
 
         self._build_ui()
         self._load_settings()
@@ -82,6 +85,8 @@ class App(ctk.CTk):
         self.entry_delay = self._param_field(params_inner, "延迟", "1", 36)
         self.entry_threshold = self._param_field(params_inner, "阈值", "0.45", 44)
         self.entry_brightness = self._param_field(params_inner, "亮度", "200", 36)
+        self.entry_trigger = self._param_field(params_inner, "按键", "5.0", 36)
+        self.entry_com = self._param_field(params_inner, "COM", "AUTO", 46)
 
         status_frame = ctk.CTkFrame(self, height=STATUS_HEIGHT, fg_color="transparent")
         status_frame.pack(fill="x", padx=H_PAD, pady=(0, 2))
@@ -151,6 +156,38 @@ class App(ctk.CTk):
         else:
             self._show_preview_canvas(blank_preview(PREVIEW_W, PREVIEW_H, COLORS["preview_bg"]))
 
+    def _on_box_appear(self):
+        """盒子出现时：预约按键触发。"""
+        if self._trigger_timer_id is not None:
+            self.after_cancel(self._trigger_timer_id)
+            self._trigger_timer_id = None
+        try:
+            delay_ms = int(float(self.entry_trigger.get()) * 1000)
+        except (ValueError, TypeError):
+            delay_ms = 5000
+        if delay_ms < 0:
+            delay_ms = 0
+        self._trigger_timer_id = self.after(delay_ms, self._do_trigger)
+        self._set_status(f"按键已预约 · {delay_ms / 1000:.1f}s")
+
+    def _do_trigger(self):
+        """到时间：通过 Arduino 发送按键。"""
+        self._trigger_timer_id = None
+        if not self._bridge or not self._bridge.is_connected():
+            # Try reconnecting
+            com = self.entry_com.get().strip()
+            if com.upper() == "AUTO":
+                com = SerialBridge.find_arduino() or com
+            if self._bridge:
+                self._bridge.disconnect()
+            self._bridge = SerialBridge(com)
+            if not self._bridge.connect():
+                self._set_status("Arduino 断连")
+                return
+        # Send single press
+        self._bridge.press_key("1")
+        self._set_status("按键已发送")
+
     def _on_monitor_screenshot(self, image_bgr: np.ndarray):
         self._box_count += 1
         self._last_shot_bgr = image_bgr
@@ -164,6 +201,8 @@ class App(ctk.CTk):
             delay=self.entry_delay.get(),
             threshold=self.entry_threshold.get(),
             brightness=self.entry_brightness.get(),
+            trigger_delay=self.entry_trigger.get(),
+            com_port=self.entry_com.get(),
             template_region=self.template_region,
             region_b=self.region_b,
         )
@@ -191,7 +230,7 @@ class App(ctk.CTk):
 
     def _load_settings(self):
         cfg = load_config()
-        for key, entry in (("delay", self.entry_delay), ("threshold", self.entry_threshold), ("brightness", self.entry_brightness)):
+        for key, entry in (("delay", self.entry_delay), ("threshold", self.entry_threshold), ("brightness", self.entry_brightness), ("trigger_delay", self.entry_trigger), ("com_port", self.entry_com)):
             entry.delete(0, "end")
             entry.insert(0, getattr(cfg, key))
 
@@ -307,6 +346,17 @@ class App(ctk.CTk):
         if self.monitor:
             self.monitor.stop()
 
+        # Connect to Arduino: always auto-detect first, fallback to configured port
+        com = SerialBridge.find_arduino() or self.entry_com.get().strip()
+        self._bridge = SerialBridge(com)
+        if self._bridge.connect():
+            self.entry_com.delete(0, "end")
+            self.entry_com.insert(0, com)
+            self._set_status(f"Arduino 已连接 · {com}")
+        else:
+            self._set_status(f"连接失败 · {com}")
+            # Don't save the failed COM port
+
         self._box_count = 0
         self._last_shot_bgr = None
         self._show_box_count_overlay = True
@@ -321,6 +371,7 @@ class App(ctk.CTk):
             on_screenshot=lambda img: self.after(0, self._on_monitor_screenshot, img),
             on_status=lambda msg: self.after(0, self._set_status, msg),
             on_error=lambda msg: self.after(0, self._on_monitor_error, msg),
+            on_box_appear=lambda: self.after(0, self._on_box_appear),
         )
         self._persist_settings()
         self.monitor.start()
@@ -330,6 +381,12 @@ class App(ctk.CTk):
     def _stop(self):
         if self.monitor:
             self.monitor.stop()
+        if self._trigger_timer_id is not None:
+            self.after_cancel(self._trigger_timer_id)
+            self._trigger_timer_id = None
+        if self._bridge:
+            self._bridge.disconnect()
+            self._bridge = None
         self._set_monitor_button(False)
         self._set_status("已停止")
 
@@ -340,5 +397,7 @@ class App(ctk.CTk):
     def _on_close(self):
         if self.monitor:
             self.monitor.stop()
+        if self._bridge:
+            self._bridge.disconnect()
         self._persist_settings()
         self.destroy()

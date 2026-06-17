@@ -28,6 +28,8 @@ class AppConfig:
     delay: str = "1"
     threshold: str = "0.45"
     brightness: str = "200"
+    trigger_delay: str = "5.0"
+    com_port: str = "AUTO"
     template_region: Optional[Region] = None
     region_b: Optional[Region] = None
 
@@ -58,6 +60,8 @@ def load_config() -> AppConfig:
         delay=str(data.get("delay", "1")),
         threshold=str(data.get("threshold", "0.45")),
         brightness=str(data.get("brightness", "200")),
+        trigger_delay=str(data.get("trigger_delay", "5.0")),
+        com_port=str(data.get("com_port", "COM5")),
     )
     if _valid_region(data.get("template_region")):
         cfg.template_region = _normalize_region(data["template_region"])
@@ -72,6 +76,8 @@ def save_config(cfg: AppConfig, template_bgr: Optional[np.ndarray] = None) -> No
         "delay": cfg.delay,
         "threshold": cfg.threshold,
         "brightness": cfg.brightness,
+        "trigger_delay": cfg.trigger_delay,
+        "com_port": cfg.com_port,
     }
     if cfg.template_region:
         data["template_region"] = cfg.template_region

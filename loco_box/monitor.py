@@ -25,6 +25,7 @@ class MonitorThread:
         on_screenshot: Callable[[np.ndarray], None],
         on_status: Callable[[str], None],
         on_error: Callable[[str], None],
+        on_box_appear: Optional[Callable[[], None]] = None,
     ):
         self.monitor_region = monitor_region
         self.shot_region = shot_region
@@ -34,6 +35,7 @@ class MonitorThread:
         self.on_screenshot = on_screenshot
         self.on_status = on_status
         self.on_error = on_error
+        self.on_box_appear = on_box_appear
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -63,6 +65,8 @@ class MonitorThread:
                     if appear_hits >= self.CONFIRM_APPEAR:
                         watching, appear_hits, absent_hits = True, 0, 0
                         self.on_status("已出现，监控中")
+                        if self.on_box_appear:
+                            self.on_box_appear()
                     else:
                         hint = f" {appear_hits}/{self.CONFIRM_APPEAR}" if appear_hits else ""
                         self.on_status(f"等待出现{hint}")
