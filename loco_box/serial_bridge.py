@@ -11,8 +11,7 @@
     from loco_box.serial_bridge import SerialBridge
     bridge = SerialBridge()
     bridge.connect()
-    bridge.send("1")           # 按数字 1
-    bridge.send("ESC")         # 按 ESC
+    bridge.send("1", 50)       # 按数字 1，按住 50ms
     bridge.send("MOUSE_LEFT")  # 鼠标左键点击
 """
 
@@ -38,7 +37,6 @@ class SerialBridge:
             return False
         try:
             self._ser = serial.Serial(self.port, self.baudrate, timeout=1)
-            time.sleep(0.15)  # Arduino 复位等待
             return True
         except (OSError, serial.SerialException):
             return False
@@ -54,7 +52,7 @@ class SerialBridge:
     def send(self, key: str, hold_ms: int = 0) -> bool:
         """发送按键命令。
         key: 按键名 ("1", "ESC", "MOUSE_LEFT" 等)
-        hold_ms: 按住毫秒数，0 为点击，>0 为长按
+        hold_ms: 按住毫秒数，0 为瞬时点击，>0 为长按
         """
         try:
             if self._ser and self._ser.is_open:
@@ -66,14 +64,9 @@ class SerialBridge:
             self.disconnect()
         return False
 
-    # 快捷方式
-    def press_key(self, key: str) -> bool:
-        """点击按键（向下兼容）"""
-        return self.send(key)
-
-    def hold_key(self, key: str, ms: int) -> bool:
-        """按住按键指定毫秒数"""
-        return self.send(key, ms)
+    def press_key(self, key: str, hold_ms: int = 50) -> bool:
+        """按下按键。hold_ms 默认 50ms，确保游戏能响应。"""
+        return self.send(key, hold_ms)
 
     def mouse_left(self) -> bool:
         return self.send("MOUSE_LEFT")

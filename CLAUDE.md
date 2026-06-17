@@ -4,6 +4,10 @@
 
 洛克王国 S2 幸运惊喜盒自动化监控工具。Windows 桌面应用，通过屏幕监控 → Arduino 硬件桥接 → USB HID 按键实现游戏自动化。
 
+## 协作规则
+
+**用户的操作用户最清楚**：用户报告的任何操作（点击按钮、检测到盒子、游戏不响应等）都是事实。禁止质疑用户操作是否正确——只检查代码和日志。当用户说某个功能不工作时，信任用户的判断，直接排查代码/硬件/日志层面的根因。
+
 ## 核心架构
 
 ```
@@ -13,15 +17,16 @@ main.py → App (CustomTkinter GUI)
               → WhiteTextMatcher.analyze() (白字笔画指纹匹配)
               → 命中 → on_box_appear 回调
                 → after(Ns) 延时
-                → SerialBridge.send("1") (串口 → Arduino → HID按键)
+                → SerialBridge.press_key("1", hold_ms=50) (串口 → Arduino → HID按键)
 ```
 
 ## 关键设计约束
 
-1. **Arduino 不能保持串口长连接**：ATmega32U4 打开串口 = 硬件复位 = USB HID 断开重连。每次按键前 `connect() → send() → disconnect()`。
-2. **游戏屏蔽 Python 模拟输入**：不能用 pyautogui/keyboard/pynput。Arduino 是唯一可行的输入路径。
-3. **COM 口会变**：每次插拔 COM 号可能变化，用 `SerialBridge.find_arduino()` 自动检测。
-4. **白字检测不是模板匹配**：是笔画指纹拓扑分析，专门针对白底白字的游戏文字设计。
+1. **Arduino 串口连接策略**：ATmega32U4 打开串口会触发硬件复位 → USB HID 断开重连。正确做法是**启动时连接一次 + 等 3s 复位完成 → 保持连接 → 后续按键瞬间发送**。不要每次按键都 connect/disconnect（重复复位不可靠）。不要用 `dsrdtr=False` 等技巧阻止复位（不可靠且可能导致连接失败）。
+2. **按键必须带 hold 时长**：`Keyboard.write()` 瞬时按下松开太快，游戏检测不到。必须用 `press → delay(≥50ms) → release` 协议，即发送 `"1:50"` 而非 `"1"`。50ms 为已验证的最小有效值。
+3. **游戏屏蔽 Python 模拟输入**：不能用 pyautogui/keyboard/pynput。Arduino 是唯一可行的输入路径。
+4. **COM 口会变**：每次插拔 COM 号可能变化，用 `SerialBridge.find_arduino()` 自动检测。
+5. **白字检测不是模板匹配**：是笔画指纹拓扑分析，专门针对白底白字的游戏文字设计。
 
 ## 模块速查
 
@@ -49,6 +54,6 @@ WATCHING: 每 0.3s 检测 absent 或 !weak_present
 
 1. **类型注解**：Python 3.9，不能用 `X | None`（用 `Optional[X]`）
 2. **线程安全**：MonitorThread 是 daemon 线程，回调需 `self.after(0, callback)` 回主线程
-3. **Arduino 复位**：每次 `serial.Serial()` 打开都会让 ATmega32U4 复位，USB HID 需 1-2s 重新初始化
+3. **Arduino 复位**：`serial.Serial()` 打开时 ATmega32U4 复位，USB HID 需 ~3s 重新初始化。启动时后台线程等 3s，之后持久连接不复位。`_send_key()` 只做 `write()`，无 sleep。
 4. **BGR 通道**：所有图像处理用 BGR 顺序（OpenCV 兼容），灰度用 `[0.114, 0.587, 0.299]` 权重
 5. **settings.json**：存用户区域和参数，程序启动自动加载。`com_port` 应始终设为 "AUTO"
