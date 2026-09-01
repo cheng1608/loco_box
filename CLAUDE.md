@@ -32,7 +32,8 @@ main.py → App (CustomTkinter GUI)
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
-| GUI | `loco_box/ui/app.py` | CustomTkinter 主窗口，状态栏，预览 |
+| GUI | `loco_box/ui/app.py` | App：业务逻辑 + 双页面管理 |
+| 页面 | `loco_box/ui/pages/` | HomePage（预览/按钮）+ SettingsPage（区域/参数） |
 | 监控线程 | `loco_box/monitor.py` | 两阶段状态机：等待出现→等待消失 |
 | 白字识别 | `loco_box/matcher.py` | `WhiteTextMatcher`：top-hat + 笔画指纹 |
 | 图像工具 | `loco_box/image_ops.py` | mss 截图、BGR转换、边缘检测、预览渲染 |
@@ -56,4 +57,4 @@ WATCHING: 每 0.3s 检测 absent 或 !weak_present
 2. **线程安全**：MonitorThread 是 daemon 线程，回调需 `self.after(0, callback)` 回主线程
 3. **Arduino 复位**：`serial.Serial()` 打开时 ATmega32U4 复位，USB HID 需 ~3s 重新初始化。启动时后台线程等 3s，之后持久连接不复位。`_send_key()` 只做 `write()`，无 sleep。
 4. **BGR 通道**：所有图像处理用 BGR 顺序（OpenCV 兼容），灰度用 `[0.114, 0.587, 0.299]` 权重
-5. **settings.json**：存用户区域和参数，程序启动自动加载。`com_port` 应始终设为 "AUTO"
+5. **settings.json**：存用户区域和参数，程序启动自动加载。`com_port` 存最近一次检测到的 COM 口（如 `COM8`）；启动时 `SerialBridge.find_arduino()` 自动检测优先，检测不到才用它兜底。

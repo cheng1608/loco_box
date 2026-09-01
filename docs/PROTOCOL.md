@@ -66,6 +66,8 @@ bridge.send("LCTRL:3000")      # 按住左 Ctrl 3 秒
 bridge.disconnect()
 ```
 
+> 实际程序不走「每次 connect/disconnect」：启动时 `connect()` 一次并等 3s 复位完成，之后保持连接、按键瞬间发送（见 CLAUDE.md 串口策略）。上面的 connect/disconnect 仅为演示协议用法。
+
 ## Arduino 固件逻辑
 
 ```
@@ -88,5 +90,5 @@ execute(raw):
 |------|----------|----------|
 | `find_arduino()` 返回 None | Arduino 未插或驱动未装 | 检查 USB 连接 |
 | `connect()` 返回 False | 串口被占用（如 Arduino IDE） | 关闭 IDE 串口监视器 |
-| 发送成功但游戏无反应 | Arduino 复位后 HID 未就绪 | 连接后等 1.5s 再发送 |
+| 发送成功但游戏无反应 | Arduino 复位后 HID 未就绪 | 连接后等 3s 再发送 |
 | COM 口号码变化 | Windows 重新分配 | 使用 `AUTO` 模式自动检测 |

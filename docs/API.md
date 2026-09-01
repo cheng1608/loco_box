@@ -9,8 +9,7 @@ class SerialBridge:
     def disconnect(self)
     def is_connected(self) -> bool
     def send(self, key: str, hold_ms: int = 0) -> bool
-    def press_key(self, key: str) -> bool
-    def hold_key(self, key: str, ms: int) -> bool
+    def press_key(self, key: str, hold_ms: int = 50) -> bool
     def mouse_left(self) -> bool
     def mouse_right(self) -> bool
 
@@ -80,6 +79,7 @@ def extract_text_strokes(bgr: np.ndarray, brightness: int = 200)
 def grab_region(region: Region) -> np.ndarray     # BGR 数组
 
 # 颜色转换（BGR ↔ RGB ↔ Gray）
+def bgra_to_bgr(bgra: np.ndarray) -> np.ndarray
 def bgr_to_gray(bgr: np.ndarray) -> np.ndarray
 def bgr_to_rgb(bgr: np.ndarray) -> np.ndarray
 def rgb_to_bgr(rgb: np.ndarray) -> np.ndarray

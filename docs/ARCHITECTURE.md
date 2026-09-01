@@ -10,10 +10,10 @@
                        │
 ┌──────────────────────▼──────────────────────────────────┐
 │                 ui/app.py (GUI 层)                       │
-│   CustomTkinter 窗口：按钮、参数、状态栏、预览区          │
+│   CustomTkinter 双页面：首页 + 设置页                    │
 │   ┌─────────────────────────────────────────────────┐  │
-│   │  监控区域 │ 截图区域 │ 预览 │ 测试 │ 开始/停止  │  │
-│   │  延迟 阈值 亮度 按键 COM                         │  │
+│   │  首页: 预览 │ 扔球 │ 开始/停止 │ 设置            │  │
+│   │  设置页: 监控/截图/预览/测试 + 5 个参数          │  │
 │   └─────────────────────────────────────────────────┘  │
 └──────┬──────────────────────┬───────────────────────────┘
        │                      │
@@ -23,8 +23,8 @@
 ┌──────▼──────────┐    ┌──────▼──────────────────────────┐
 │  monitor.py     │    │  serial_bridge.py               │
 │  状态机循环      │    │  AUTO 端口检测                   │
-│  0.3s 轮询      │    │  文本协议: "KEY\n"              │
-│  确认计数器      │    │  connect → send → disconnect    │
+│  0.3s 轮询      │    │  文本协议: "KEY:ms"             │
+│  确认计数器      │    │  连接一次 + 等3s → 保持连接     │
 └──────┬──────────┘    └──────┬──────────────────────────┘
        │                      │
 ┌──────▼──────────┐    ┌──────▼──────────────────────────┐
@@ -52,8 +52,8 @@
     → 指纹对比 (覆盖度/IoU/布局/字符数)
     → MatchAnalysis (absent/strong/weak/score)
     → MonitorThread 状态机决策
-    → on_box_appear → after(delay) → SerialBridge.send("1")
-    → Arduino → Keyboard.press/release → 游戏
+    → on_box_appear → after(delay) → SerialBridge.press_key("1", hold_ms=50)
+    → Arduino → Keyboard.press → delay(50ms) → release → 游戏
 ```
 
 ## 线程模型
@@ -62,6 +62,8 @@
 |------|--------|----------|
 | 主线程 | `main.py` | tkinter mainloop，程序生命周期 |
 | MonitorThread | `App._start()` | daemon，随"停止"按钮销毁 |
+| ArduinoInit 线程 | `App._start()` | daemon，connect + 等 3s 复位后结束 |
+| 扔球线程 | `App._toggle_throw()` | daemon，循环发键直到停止 |
 | RegionSelector 线程 | `select_region()` | daemon，框选完毕自毁 |
 
 **线程安全规则**：MonitorThread 回调必须通过 `self.after(0, cb)` 回到主线程才能操作 GUI。
@@ -77,8 +79,8 @@
 | 默认亮度 | 200 | settings.py |
 | 默认按键延迟 | 5.0s | settings.py |
 | 串口波特率 | 9600 | serial_bridge.py |
-| 窗口尺寸 | 324×666 px | ui/theme.py |
-| 预览区域 | 300×520 px | ui/theme.py |
+| 窗口尺寸 | 324×230 px | ui/theme.py |
+| 预览区域 | 300×144 px | ui/theme.py |
 
 ## 白字检测算法
 
@@ -104,6 +106,6 @@ ATmega32U4 芯片特性：USB 串口打开时会触发硬件复位（DTR 脉冲 
 
 **影响**：
 - 复位 → USB 断开重连 → HID 重新枚举 → 游戏可能丢失键盘识别
-- 启动时间 ~1.5s（bootloader + 固件初始化 + USB 枚举）
+- 启动时间 ~3s（bootloader + 固件初始化 + USB 枚举）
 
-**解决方案**：不在程序启动时连接串口，只在需要发送按键时 `connect → send → disconnect`。这样 USB HID 保持稳定，只在按键瞬间短暂波动。
+**解决方案**：启动时 `connect()` 一次，等待 ~3s 复位 + HID 枚举完成后**保持连接**；后续按键直接 `write()` 瞬间发送，不再重复 connect/disconnect（重复复位不可靠）。

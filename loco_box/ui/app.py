@@ -45,6 +45,9 @@ class App:
         self._last_shot_bgr: Optional[np.ndarray] = None
         self._trigger_timer_id: Optional[str] = None
         self._bridge: Optional[SerialBridge] = None
+        self._throw_active = False
+        self._throw_cooldown = False
+        self._throw_thread: Optional[threading.Thread] = None
 
         self._build_pages()
         self._load_settings()
@@ -163,6 +166,9 @@ class App:
         if self._trigger_timer_id is not None:
             self.root.after_cancel(self._trigger_timer_id)
             self._trigger_timer_id = None
+        if self._throw_active:
+            self._throw_active = False
+            self.home_page.set_throw_button(False)
         if self._bridge:
             self._bridge.disconnect()
             self._bridge = None
@@ -210,6 +216,61 @@ class App:
             return
         self._bridge.press_key("1", hold_ms=50)
         self.root.after(0, self._set_status, "按键已发送")
+
+    # ── 扔球 ──────────────────────────────────────
+
+    def _toggle_throw(self):
+        # 按钮冷却中，忽略点击
+        if self._throw_cooldown:
+            return
+
+        if self._throw_active:
+            self._throw_active = False
+            self.home_page.set_throw_button(False)
+            self._set_status("扔球已停止")
+        else:
+            self._throw_active = True
+            self.home_page.set_throw_button(True)
+            self._throw_thread = threading.Thread(target=self._throw_loop, daemon=True)
+            self._throw_thread.start()
+
+        # 5s 冷却
+        self._throw_cooldown = True
+        self.home_page.btn_throw.configure(state="disabled")
+        self.root.after(5000, self._reset_throw_cooldown)
+
+    def _reset_throw_cooldown(self):
+        self._throw_cooldown = False
+        self.home_page.btn_throw.configure(state="normal")
+
+    def _throw_loop(self):
+        """循环：按住左键 200ms → 等 150ms → 按 Shift 50ms → 等 50ms，直到 _throw_active 为 False。"""
+        import time
+
+        # 确保 Arduino 已连接
+        if not self._bridge or not self._bridge.is_connected():
+            com = SerialBridge.find_arduino() or self.settings_page.entry_com.get().strip()
+            if self._bridge:
+                self._bridge.disconnect()
+            self._bridge = SerialBridge(com)
+            if not self._bridge.connect():
+                self._bridge = None
+                self._throw_active = False
+                self.root.after(0, self.home_page.set_throw_button, False)
+                self.root.after(0, self._set_status, "Arduino 连接失败")
+                return
+            time.sleep(3.0)  # ATmega32U4 复位 + HID 枚举
+            self.root.after(0, self._set_status, f"Arduino 已就绪 · {com}")
+
+        self.root.after(0, self._set_status, "扔球中")
+        while self._throw_active:
+            if not self._throw_active:
+                break
+            if self._bridge and self._bridge.is_connected():
+                self._bridge.send("MOUSE_LEFT", 200)
+                time.sleep(0.15)
+                self._bridge.send("LSHIFT", 50)
+                time.sleep(0.05)
 
     def _on_monitor_screenshot(self, image_bgr: np.ndarray):
         self._box_count += 1
@@ -356,6 +417,8 @@ class App:
     def _on_close(self):
         if self.monitor:
             self.monitor.stop()
+        if self._throw_active:
+            self._throw_active = False
         if self._bridge:
             self._bridge.disconnect()
         self._persist_settings()

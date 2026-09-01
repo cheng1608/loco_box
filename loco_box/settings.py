@@ -61,7 +61,7 @@ def load_config() -> AppConfig:
         threshold=str(data.get("threshold", "0.45")),
         brightness=str(data.get("brightness", "200")),
         trigger_delay=str(data.get("trigger_delay", "5.0")),
-        com_port=str(data.get("com_port", "COM5")),
+        com_port=str(data.get("com_port", "AUTO")),
     )
     if _valid_region(data.get("template_region")):
         cfg.template_region = _normalize_region(data["template_region"])
