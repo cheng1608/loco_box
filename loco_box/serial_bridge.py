@@ -49,6 +49,20 @@ class SerialBridge:
     def is_connected(self) -> bool:
         return self._ser is not None and self._ser.is_open
 
+    def connect_and_wait(self, reset_wait: float = 3.0) -> bool:
+        """打开串口并等待 ATmega32U4 复位 + USB HID 重新枚举完成。
+
+        ATmega32U4 打开串口会触发硬件复位，USB HID 约需 reset_wait 秒
+        才能重新枚举，此期间发送的按键无效。本方法连接成功后同步阻塞
+        reset_wait 秒，请在后台线程调用以免卡住 GUI。
+        """
+        if self.is_connected():
+            return True
+        if not self.connect():
+            return False
+        time.sleep(reset_wait)
+        return True
+
     def send(self, key: str, hold_ms: int = 0) -> bool:
         """发送按键命令。
         key: 按键名 ("1", "ESC", "MOUSE_LEFT" 等)

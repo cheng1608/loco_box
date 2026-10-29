@@ -24,7 +24,8 @@
 | 命令 | 键码 | 说明 |
 |------|------|------|
 | `0` ~ `9` | `0` ~ `9` | 数字键 |
-| `A` ~ `Z` | `A` ~ `Z` | 字母键 |
+| `A` ~ `Z` | a ~ z | **大小写语义见下方注意** |
+| `a` ~ `z` | a ~ z | 原始字母键 |
 | `ESC` | `KEY_ESC` | Escape |
 | `TAB` | `KEY_TAB` | Tab |
 | `SPACE` | ` ` | 空格 |
@@ -51,6 +52,17 @@
 | `MOUSE_LEFT` | 鼠标左键点击 |
 | `MOUSE_RIGHT` | 鼠标右键点击 |
 
+鼠标同样支持长按：`MOUSE_LEFT:200` = 按住左键 200ms 后松开（`Mouse.press → delay → Mouse.release`）。不带时长则 `Mouse.click()` 瞬时点击。
+
+### 字母大小写语义（重要）
+
+HID 键盘协议里**大写字母 = SHIFT + 对应键**。固件 `keyToCode()` 刻意把单个大写字母 `A`~`Z` **转成小写**后再 `Keyboard.press`，即发送 `"A"` 与 `"a"` 都会敲出小写 `a`、且**不会带 Shift**。这是为了绕过「HID 大写 = 组合键」的坑，确保自动演奏敲出的都是干净的单键。
+
+含义：
+- 想敲小写字母 → 直接发 `A`~`Z` 或 `a`~`z` 都行（自动演奏即如此：发的是大写 `F/G/H/...`）。
+- 固件**无法**产生大写字母（无对应命名键）。如需大写，需给固件加 `Shift` 组合或特殊处理。
+- 多字符命令（`ESC`、`F1`、`MOUSE_LEFT` 等）内部仍先 `toUpperCase()` 再匹配，不受此影响。
+
 ## Python 调用示例
 
 ```python
@@ -66,9 +78,13 @@ bridge.send("LCTRL:3000")      # 按住左 Ctrl 3 秒
 bridge.disconnect()
 ```
 
-> 实际程序不走「每次 connect/disconnect」：启动时 `connect()` 一次并等 3s 复位完成，之后保持连接、按键瞬间发送（见 CLAUDE.md 串口策略）。上面的 connect/disconnect 仅为演示协议用法。
+> 实际程序不走「每次 connect/disconnect」：启动/首次运行时 `connect()` 一次并等 ~3s 复位完成，之后**保持连接**、按键瞬间发送（见 `docs/ARCHITECTURE.md` 串口策略）。上面的 connect/disconnect 仅为演示协议用法。
+>
+> 当前架构里 `SerialBridge` 被 `backend/core/arduino.py` 的 `ArduinoController` 单例封装（`ctx.arduino`），所有 Feature 共享同一个持久连接，**不应**再各自直接 new `SerialBridge`。
 
 ## Arduino 固件逻辑
+
+固件源码：`scripts/arduino_bridge/arduino_bridge.ino`（Arduino IDE 上传，板型选 Arduino Leonardo / Micro）。
 
 ```
 loop():
@@ -81,8 +97,10 @@ execute(raw):
   → 查找键码
   → 时长 > 0 → press → delay → release (长按)
   → 时长 = 0 → write (点击)
-  → 鼠标命令 → Mouse.click()
+  → 鼠标命令 → 时长>0 则 press→delay→release，否则 Mouse.click()
 ```
+
+> **游戏帧问题**：`Keyboard.write()` 瞬时按下/松开太快，多数游戏检测不到。因此**长按必须用 `键:毫秒`** 形式（按住 ≥50ms 再松开）。`music.py` 的 `HOLD_MS = 50` 是已验证的最小有效值；丢球/惊喜盒子同样带 hold。
 
 ## 故障排查
 

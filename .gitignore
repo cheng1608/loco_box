@@ -10,6 +10,10 @@ data/
 .venv/
 venv/
 env/
+node_modules/
+target/
+playwright-report/
+test-results/
 
 .vscode/
 .idea/

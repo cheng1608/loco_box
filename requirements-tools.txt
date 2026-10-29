@@ -1,0 +1,4 @@
+# Optional MIDI conversion and local handpan simulator.
+-r requirements.txt
+mido>=1.3.0
+pygame>=2.5.0

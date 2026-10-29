@@ -1,6 +1,7 @@
 """后台监控线程。"""
 
 import threading
+import time
 from typing import Callable, Optional
 
 import numpy as np
@@ -55,6 +56,7 @@ class MonitorThread:
     def _run(self):
         watching = False
         appear_hits = absent_hits = 0
+        absent_since = 0.0
 
         while not self._stop.is_set():
             try:
@@ -71,10 +73,18 @@ class MonitorThread:
                         hint = f" {appear_hits}/{self.CONFIRM_APPEAR}" if appear_hits else ""
                         self.on_status(f"等待出现{hint}")
                 else:
-                    absent_hits = absent_hits + 1 if result.absent or not result.weak_present else 0
+                    if result.absent or not result.weak_present:
+                        if absent_hits == 0:
+                            absent_since = time.monotonic()
+                        absent_hits += 1
+                    else:
+                        absent_hits = 0
+
                     if absent_hits >= self.CONFIRM_ABSENT:
-                        self.on_status(f"消失确认 · {self.delay_sec}s后截图")
-                        if self._stop.wait(self.delay_sec):
+                        # 延时从「第一次消失」起算，确认期计入延时
+                        remaining = max(0.0, self.delay_sec - (time.monotonic() - absent_since))
+                        self.on_status(f"消失确认 · {remaining:.1f}s后截图")
+                        if self._stop.wait(remaining):
                             break
                         self.on_screenshot(grab_region(self.shot_region))
                         watching, appear_hits, absent_hits = False, 0, 0
