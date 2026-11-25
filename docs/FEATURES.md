@@ -1,6 +1,6 @@
 # 功能详解与扩展指南
 
-本项目是「多功能游戏自动化盒子」。每个功能 = 一个后台动作循环 + 主界面配置面板（可选）+ 专属悬浮窗（可选）。目前有三个功能：`box_monitor`（惊喜盒子）、`throw`（丢球）、`music`（自动演奏）。
+本项目是「多功能游戏自动化盒子」。每个功能 = 一个后台任务 + 主界面配置面板（可选）+ 专属悬浮窗（可选）。目前有四个功能：`box_monitor`（惊喜盒子）、`throw`（丢球）、`music`（自动演奏）、`pet_viewer`（精灵查看）。
 
 读本篇前建议先看 `docs/ARCHITECTURE.md`（进程/窗口/数据流）与 `docs/API.md`（Feature 基类与路由）。三份合起来就是「下一轮扩展」的地图。
 
@@ -53,80 +53,40 @@ WATCHING  每 0.3s 检测 absent 或 !weak_present，连续 3 次
 
 **四段时间**（ms，`config_schema` 默认值）：`mouse_hold` 200 / `mouse_gap` 150 / `shift_hold` 50 / `shift_gap` 50。
 
-**实现**：`_loop` 后台线程，先确保 Arduino 已连接（未连接则后台 connect + 就绪提示），然后 `while self._active` 依次 `send("MOUSE_LEFT", mouse_hold)`、sleep gap、`send("LSHIFT", shift_hold)`、sleep gap。`stop()` 只翻 `_active=False`，无事件，靠下轮循环判断退出。
+**实现**：启动先申请设备所有权，后台线程确保 Arduino 连接后发送带 owner 的鼠标/Shift 命令；保持与间隔用可打断的 Event.wait。停止唤醒等待，旧线程退出并释放设备后才允许重启。
 
 ---
 
-## 功能三：自动演奏（`music`）⭐ 本轮重点
+## 功能三：自动演奏（`music`）
 
-文件：`backend/features/music.py`（面板 `frontend/src/views/MusicConfig.vue`，悬浮窗 `music_overlay`，图标 `frontend/src/components/MusicIcons.ts`）。
+直接导入 MIDI，保留多轨起音和和弦，适配九音手碟；旧 TXT 曲库仍可播放。面板提供原文件导入、音轨选择、移调、音域策略、冲突分析和控制；悬浮窗复用同一个播放器状态。
 
-**做什么**：把 `data/scores/` 里的按键谱当「歌曲」，演奏时用 Arduino HID 敲一台 9 音手碟。交互做成音乐播放器：歌单面板选曲 → 悬浮窗里上一曲/暂停·播放/下一曲/播放模式。
+音乐域拆分到 `backend/music/`：MIDI reader 保留准确时间轴，compiler 生成完整键状态，library 保存原文件和逐曲设置并缓存解析，scheduler 提供可暂停单调时钟。`backend/features/music.py` 管理实际调度、播放模式和设备会话；API 独立在 `backend/api/music.py`。
 
-> 完整**域设计**（手碟 9 音音阶、音符↔键盘映射、简谱格式约定、时序模型、播放模式语义、真实谱面示例）见 **[docs/MUSIC.md](MUSIC.md)**；本节只讲后端实现与接线，域细节不再重复。
+- 每首连接就绪后 3 秒倒计时，按绝对时间播放；和弦以一次完整 HID 报告触发。
+- 暂停冻结位置并清理当前会话，继续新建会话，不重敲已响音；停止、切歌立即使旧 generation 失效。
+- 曲库选择与实际演奏分离；查看另一首详情不打断当前曲，明确播放及上一曲/下一曲才切换。
+- 默认复用转谱脚本的自动识调与音级折叠，全部音符都映射演奏；快速重击、同键映射和超设备容量的音自动分次/顺延。
+- 播放和暂停都保留设备所有权；结束/停止/错误后释放，串口保持连接。
+- `music.state` 事件每 200ms 推送进度，控制变更立即推送完整状态，REST 轮询兜底；不借助全局状态文字推断音乐进度。
+- `settings.json` 合并保存模式和选中曲，逐曲适配设置在 `data/music/settings/`，原文件在 `data/music/originals/`。
 
-### 播放模式（五态）
+五种模式、键位映射、MIDI 限制、旧 TXT 格式和使用步骤见 [MUSIC.md](MUSIC.md)。协议、设备能力、固件升级与编译见 [PROTOCOL.md](PROTOCOL.md)。
 
-后端 `MODES = ("sequential", "single", "repeat_one", "repeat_all", "shuffle")`。
+---
 
-| key | 中文 | 当前曲自然播完后 |
-|-----|------|------------------|
-| `sequential` | 列表播放（默认） | 列表内下一首；到底则停 |
-| `single` | 单曲播放 | **停**（只播当前这一首）|
-| `repeat_one` | 单曲循环 | 重复当前这一首 |
-| `repeat_all` | 列表循环 | 列表内下一首，到尾回第一首 |
-| `shuffle` | 随机播放 | 随机挑一首（排除当前曲） |
+## 功能四：精灵查看（`pet_viewer`）
 
-手动「下一曲 / 上一曲」与模式无关：`_advance_manual(±1)`，shuffle 时「下一曲」取随机、其余按列表 `±1`（可环绕）。改键只改 `_current` 并落盘；若正在播放，再由 `_next_event`/`_prev_event` 打断当前曲、外层循环按新 `_current` 续。
+从本机网卡读取野生交互 PVE 消息，显示敌方精灵的原始性格及已下发的声音、体型、血脉、异色等属性。主面板为 `frontend/src/views/PetViewerConfig.vue`，独立悬浮窗 label 为 `pet_overlay`。
 
-### 暂停 / 续播语义
+- `backend/pet_viewer/` 维护 Npcap 采集、TCP 重组、握手解密、Protobuf 解析和战斗状态；`backend/features/pet_viewer.py` 管理可停止线程和 generation，`backend/api/pet_viewer.py` 提供专属接口。
+- 使用 `data/pet_viewer/resources/` 的配套协议与配置。缺资源或驱动时显示原因，Box 其余功能仍可启动；资源导入工具为 `scripts/import_pet_resources.py`。
+- 主性格按原始 `nature` 编号显示，额外战斗属性修正只在详情中展示。缺失字段保持未知；破盾、变身和捕获结算更新同一遭遇。
+- 只接受已确认的野生交互 PVE；PVP/玩家证据阻断完整属性解码并撤销同场历史。示例回放清楚标注、不写真实历史。
+- 不依赖 Arduino，也不占用设备。`requires_arduino=False` 和 `blocks_region_selection=False` 使断开硬件及区域框选不影响监听；主窗口退出仍统一停止。
+- `pet_viewer.state` 事件与 REST 状态快照供主面板/悬浮窗共用。网卡设置使用 `adapter` 键，空字符串自动选择；真实历史位于 `data/pet_viewer/history.sqlite3`。
 
-`pause()` 置 `_paused=True`（不打断当前正在敲的音）；`_loop` 在**下一个音符边界**看到 `_paused` 就发布「已暂停」并 `while self._paused and self._active: time.sleep(0.1)` 原地等待。`resume()` 清标志、发布「继续演奏」，随后从**停住的那个音**继续。`stop()` 同时清 `_paused` 并 set `_stop_event`，等待循环跳出。
-
-### 演奏线程伪码（`_loop`）
-
-```
-若 Arduino 未连接：开后台线程 connect（与首曲倒计时并行，约 3s 复位）
-while self._active:
-    for 3..1: publish "准备开始 · i"; _stop_event.wait(1) 可中断退出
-    # 仅第一首歌的倒计时后检查一次连接结果（此后 connect_thread 置 None，不再重复连接）
-    notes = 读当前曲 → parse
-    if 无有效音: 按模式 _advance_after_song()（None→播放结束），continue
-    for i, (key, pause_ms) in enumerate(notes):
-        if _paused: 等待续播
-        if _next/_prev_event.set(): clear + break  # 切歌
-        publish "演奏中 · {曲名} · 第 i/n 音"
-        arduino.send(key, HOLD_MS)   # 失败→停
-        _stop_event.wait(pause_ms/1000)  # 停止可中断
-    else:  # 自然播完，未被 break
-        按模式 _advance_after_song()，None → 播放结束
-```
-
-要点：
-- **每首歌前都有 3s 倒计时**（含第一首），不是只在启动时倒计时一次——这是为了给用户每次切到游戏窗口的时间。
-- **暂停点在音符边界**；切歌打断只发生在音符边界。
-- 所有可等待处都用 `_stop_event.wait` 或 `_paused` 轮询，保证 `stop()` 最多延迟一拍就能停。
-- 演奏进度经 `publish_status` 逐音广播，前端悬浮窗底部状态行实时显示。
-
-### 控制入口（路由在 `docs/API.md`）
-
-`/api/music/state` 是播放器唯一状态源（`playlist/current/mode/running/paused`），悬浮窗与面板都轮询它；`select/next/prev/mode/pause/resume` 是变更指令。
-
-### 状态落盘
-
-`mode` + `current` 持久化到 `settings.json` 的 `music` 命名空间（`_save_state()`）。启动时若 `current` 已不在歌单（文件被删）会回退到歌单第一首。
-
-### 悬浮窗按钮与状态
-
-四按钮（`music_overlay`）：上一曲 / 暂停·播放 / 下一曲 / 播放模式。播放/暂停按钮三态逻辑：
-`!running → startFeature('music')`；`running && paused → musicResume()`；`running && !paused → musicPause()`。
-模式按钮按 `MODES` 顺序取下一模式 `setMusicMode(next)`，图标随 `mode` 在 `MusicIcons.ts` 的五种图标间切换。关闭悬浮窗 = `stopFeature('music')` + `hide_music_overlay`。
-
-### 自定义 / 加歌
-
-1. 往 `data/scores/` 丢一个 UTF-8 `.txt` 按键谱（格式见上）。
-2. 主界面音乐页点「打开文件夹」或「刷新」即可看到。
-3. 键位若要换歌（不同音阶），改 `VALID_KEYS`（键位集合）与 `scripts/midi2score.py` 的 `DEGREE_TARGETS`/`ALL_NOTES`，键值保持大写字母（固件会转小写）。
+使用步骤、资源更新与实战验证边界见 [PET_VIEWER.md](PET_VIEWER.md)。
 
 ---
 
@@ -135,12 +95,12 @@ while self._active:
 按以下顺序，通常一小时内能接完：
 
 1. **后端**：`backend/features/xxx.py` 写 `@register class XxxFeature(Feature)`，实现 `start(config)/stop()/is_running()`，需要配置就声明 `config_schema`（会同时决定默认值 merge 与前端可选表单）。**在 `backend/features/__init__.py` 的 `create_features()` 里 import 它**（触发注册）——这是最容易漏的一步。
-2. **路由（可选）**：功能专属命令在 `backend/api/routes.py` 里用 `state.features.get("xxx")` 拿实例添加端点；参考 `music` 那组（`/api/music/*`）的写法：先 `_get_music()` 守卫再调用公开方法。
+2. **路由（可选）**：功能专属命令可建立独立 router，参考 `backend/api/music.py`，并在 `backend/main.py` 挂载。
 3. **面板**：`frontend/src/views/XxxConfig.vue` 写配置组件，在 `MainView.vue` 的 `panels` 表注册 `xxx: XxxConfig`。
 4. **悬浮窗（可选）**：
    - `frontend/src-tauri/src/overlays.rs` 添加按需创建/释放逻辑（无边框/透明/置顶；不应抢游戏焦点时加 `.focusable(false)`），暴露异步 `show_xxx_overlay`/`hide_xxx_overlay` 命令，在 `lib.rs` 的 `generate_handler!` 中登记。不要在 `.setup()` 里预建隐藏 WebView。
    - 写视图组件，在 `frontend/src/App.vue` 的 `detectWindow()` 里按窗口 label 分发渲染。
-5. **复用底座**：按键一律走 `ctx.arduino`（内部共享同一持久串口连接）；实时提示走 `ctx.bus.publish_status`。**禁止**直接 new `SerialBridge` 去连接——串口只能被共享底座独占。
+5. **复用底座**：按键先 `acquire(feature_id)`，发送带 `owner=feature_id`，finally 中 `release(feature_id)`；一律走 `ctx.arduino`（内部共享同一持久串口连接）；实时提示走 `ctx.bus.publish_status`。**禁止**直接 new `SerialBridge` 去连接——串口只能被共享底座独占。
 
 ### 新功能自检清单
 

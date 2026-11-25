@@ -124,7 +124,7 @@ function Write-Diagnostics {
     if (-not (Test-Path -LiteralPath $python)) {
         throw 'Missing .venv. Create the Python environment and install requirements.txt first.'
     } else {
-        & $python -c "import importlib.util; modules = ('fastapi', 'uvicorn', 'websockets', 'serial', 'numpy', 'PIL', 'mss', 'tkinter'); missing = [m for m in modules if importlib.util.find_spec(m) is None]; print('Missing Python modules: ' + (', '.join(missing) or 'none')); raise SystemExit(bool(missing))"
+        & $python -c "import importlib.util; modules = ('fastapi', 'uvicorn', 'websockets', 'serial', 'mido', 'numpy', 'PIL', 'mss', 'tkinter'); missing = [m for m in modules if importlib.util.find_spec(m) is None]; print('Missing Python modules: ' + (', '.join(missing) or 'none')); raise SystemExit(bool(missing))"
         if ($LASTEXITCODE -ne 0) { throw 'Install backend dependencies: .venv\Scripts\python.exe -m pip install -r requirements.txt' }
     }
     $health = Get-Health

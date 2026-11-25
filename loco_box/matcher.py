@@ -1,6 +1,7 @@
 """白色文字笔画指纹匹配。"""
 
 from dataclasses import dataclass
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -33,13 +34,13 @@ def _is_white_field(metrics: dict, brightness: int) -> bool:
     return metrics["mean"] >= brightness - 8 and metrics["std"] < 14
 
 
-def _peak_blobs(mask: np.ndarray, min_pixels: int = 20) -> list[dict]:
+def _peak_blobs(mask: np.ndarray, min_pixels: int = 20) -> List[Dict]:
     col_sum = mask.sum(axis=0).astype(np.float64) / 255.0
     if col_sum.max() < 1:
         return []
 
     threshold = max(2.0, col_sum.max() * 0.15)
-    blobs: list[dict] = []
+    blobs: List[Dict] = []
     in_peak, start = False, 0
 
     def add_blob(x0: int, x1: int):
@@ -72,7 +73,7 @@ def _analyze_mask(mask: np.ndarray) -> dict:
     }
 
 
-def _layout_similarity(tpl_blobs: list[dict], frame_blobs: list[dict], height: int) -> float:
+def _layout_similarity(tpl_blobs: List[Dict], frame_blobs: List[Dict], height: int) -> float:
     if len(tpl_blobs) < 3 or len(frame_blobs) < 3:
         return 0.0
     tpl_xs = [b["cx"] for b in tpl_blobs]
@@ -90,7 +91,7 @@ def _layout_similarity(tpl_blobs: list[dict], frame_blobs: list[dict], height: i
     return 0.55 * gap_ratio + 0.45 * y_score
 
 
-def _band_coverage(tpl_stroke: np.ndarray, frame_stroke: np.ndarray, n_bands: int = 5) -> tuple[float, float]:
+def _band_coverage(tpl_stroke: np.ndarray, frame_stroke: np.ndarray, n_bands: int = 5) -> Tuple[float, float]:
     w = tpl_stroke.shape[1]
     coverages = []
     for i in range(n_bands):
@@ -106,7 +107,7 @@ def _band_coverage(tpl_stroke: np.ndarray, frame_stroke: np.ndarray, n_bands: in
     return float(min(coverages)), float(np.mean(coverages))
 
 
-def _empty_result(gray: np.ndarray, metrics: dict) -> tuple[np.ndarray, dict]:
+def _empty_result(gray: np.ndarray, metrics: dict) -> Tuple[np.ndarray, Dict]:
     empty = np.zeros_like(gray)
     return empty, {
         **metrics,
@@ -118,7 +119,7 @@ def _empty_result(gray: np.ndarray, metrics: dict) -> tuple[np.ndarray, dict]:
     }
 
 
-def extract_text_strokes(bgr: np.ndarray, brightness: int = 200) -> tuple[np.ndarray, dict]:
+def extract_text_strokes(bgr: np.ndarray, brightness: int = 200) -> Tuple[np.ndarray, Dict]:
     gray = bgr_to_gray(bgr)
     metrics = _screen_metrics(gray, brightness)
     if _is_white_field(metrics, brightness):
@@ -145,10 +146,6 @@ class WhiteTextMatcher:
         self._tpl_h = template_bgr.shape[0]
 
     @property
-    def tpl_mask(self) -> np.ndarray:
-        return self.tpl_stroke
-
-    @property
     def is_valid(self) -> bool:
         return (
             self.tpl_stroke_pixels >= 40
@@ -157,11 +154,7 @@ class WhiteTextMatcher:
         )
 
     def analyze(self, frame_bgr: np.ndarray, threshold: float) -> MatchAnalysis:
-        gray = bgr_to_gray(frame_bgr)
-        metrics = _screen_metrics(gray, self.brightness)
-        if _is_white_field(metrics, self.brightness):
-            return MatchAnalysis(True, False, False, 0.0)
-
+        # Extraction already computes screen metrics and rejects white fields.
         frame_stroke, frame_meta = extract_text_strokes(frame_bgr, self.brightness)
         if frame_meta["stroke_pixels"] == 0:
             return MatchAnalysis(True, False, False, 0.0)
@@ -190,7 +183,7 @@ class WhiteTextMatcher:
             and abs(fc - tc) <= 3
             and frame_meta["stroke_ratio"] <= 0.65
             and frame_meta["largest_blob_ratio"] <= 0.45
-            and metrics["edge_density"] >= 0.014
+            and frame_meta["edge_density"] >= 0.014
         )
         weak = strong or (coverage >= 0.30 and min_band >= 0.22 and layout >= 0.35 and score >= threshold - 0.05)
         return MatchAnalysis(False, strong, weak, score)

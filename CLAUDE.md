@@ -13,7 +13,7 @@
 Tauri 2 壳：主窗口 + 各功能隐藏悬浮窗（无边框/透明/置顶）
 ```
 
-当前三个功能：`box_monitor` 惊喜盒子（白字识别）、`throw` 丢球（循环键鼠）、`music` 自动演奏（简谱→手碟按键，播放器式歌单）。**完整机制见 `docs/FEATURES.md`。**
+当前四个功能：`box_monitor` 惊喜盒子（白字识别）、`throw` 丢球（循环键鼠）、`music` 自动演奏（MIDI→九音手碟和弦，兼容 TXT 歌单）、`pet_viewer` 精灵查看（本机只读网络解析，无需 Arduino）。**完整机制见 `docs/FEATURES.md`。**
 
 ## 协作规则
 
@@ -22,13 +22,14 @@ Tauri 2 壳：主窗口 + 各功能隐藏悬浮窗（无边框/透明/置顶）
 ## 硬约束（违反会出事的）
 
 1. **改后端 `.py` 必须重启后端**：后端是长驻进程（127.0.0.1:8790），不重启不生效。桌面启动的后端由 `backend.runner` 管理，关闭主窗口后会正常退出，再运行 `start.bat` 加载改动；独立 uvicorn 用原终端 Ctrl+C 退出后重启。先查健康接口中的 `service/protocol/pid` 确认归属，不按端口盲杀其他进程。完整复盘见 `docs/CHANGELOG.md`。
-2. **Arduino 串口只连一次**：ATmega32U4 打开串口会硬件复位 → USB HID 断开重连。启动/首次连接一次 + 等 ~3s → **保持连接**，之后按键瞬间发送。禁止每次按键 connect/disconnect、禁止用 `dsrdtr=False` 之类技巧。所有功能统一走 `ctx.arduino`（`backend/core/arduino.py` 单例），**不要**各自 new `SerialBridge`。
-3. **按键必须带 hold**：`Keyboard.write()` 瞬时按下松开太快，游戏检测不到。必须 `press → delay(≥50ms) → release`，即发 `"1:50"` 而非 `"1"`。50ms 是已验证最小有效值。
+2. **Arduino 串口只连一次**：ATmega32U4 打开串口会硬件复位 → USB HID 断开重连。启动/首次连接一次 + 等 ~3s → **保持连接**，之后按键瞬间发送。禁止每次按键 connect/disconnect、禁止用 `dsrdtr=False` 之类技巧。所有功能统一走 `ctx.arduino`（`backend/core/arduino.py` 单例），运行前 acquire，发送带 owner，finally release；**不要**各自 new `SerialBridge`。
+3. **按键必须带 hold**：`Keyboard.write()` 瞬时按下松开太快，游戏检测不到。必须保持按下至少 50ms 再释放。旧单键发 `"1:50"` 而非 `"1"`；MIDI 使用 v2 完整键状态，调度保持 50ms，固件不得用阻塞 delay。50ms 是已验证最小有效值。
 4. **游戏屏蔽 Python 模拟输入**：pyautogui/keyboard/pynput 一概不能用。Arduino 是唯一输入路径。
 5. **字母大小写**：固件把单个大写字母转小写再按（HID 大写=SHIFT 组合）。所以发送大写字母 = 敲小写、不带 Shift。详见 `docs/PROTOCOL.md`。
 6. **COM 口会变**：每次插拔 COM 号可能变化。用 `SerialBridge.find_arduino()` 自动检测优先，`settings.json` 的 `com_port` 兜底。
 7. **Python 3.9**：类型注解用 `Optional[X]`，**禁止 `X | None`**。List/Dict 用 `typing`。
 8. **Windows 父进程退出监听不能阻塞读 stdin**：`backend.runner` 使用 `PeekNamedPipe` 检查管道断开。本机 Conda Python + NumPy/OpenBLAS 下，`stream.read()` 和直接 `ReadFile` 都实测会阻塞首次 DLL 加载及新线程创建；保留非阻塞轮询与对应回归测试。
+9. **演奏默认必须与旧转谱脚本一致**：自动识调与 degree 音级折叠共用 `loco_box/handpan.py`。用户明确要求全部音符都播放，不得因音域/重击/容量问题丢音或拒播；同键和超容量自动分次/顺延，卡顿后继续。Lemon 的 573 个按键与停顿必须保持与原 TXT 一致。
 
 ## 线程与消息
 
@@ -48,18 +49,21 @@ Tauri 2 壳：主窗口 + 各功能隐藏悬浮窗（无边框/透明/置顶）
 | 事件总线 | `backend/core/events.py` | `publish_status/shot/frame/count/event` |
 | 截图/预览 | `backend/core/screen.py` `preview.py` | mss 截图、JPEG base64、周期推帧 |
 | 功能框架 | `backend/features/__init__.py` | `Feature` ABC + `@register` + `FeatureContext` |
-| 三个功能 | `backend/features/{box_monitor,throw,music}.py` | 见 `docs/FEATURES.md` |
-| 路由/WS | `backend/api/routes.py` `ws.py` | REST 端点、`/ws` 事件转发 |
+| 功能 | `backend/features/{box_monitor,throw,music,pet_viewer}.py` | 见 `docs/FEATURES.md` |
+| 路由/WS | `backend/api/routes.py` `music.py` `pet_viewer.py` `ws.py` | 通用/音乐/精灵 REST、`/ws` 事件转发 |
+| 音乐域 | `backend/music/` | 原文件曲库、MIDI 解析、音域适配与冲突分析、时间轴 |
+| 精灵域 | `backend/pet_viewer/` | Npcap、TCP/握手解码、PVE 筛选、性格、历史；原始性格与修正分开 |
 | 复用图像库 | `loco_box/`（matcher/monitor/image_ops/serial_bridge/region_selector/types） | 惊喜盒子识别与串口桥（后端经 `ctx.arduino` 用） |
 | 前端入口/主视图 | `frontend/src/main.ts` `App.vue` `MainView.vue` | 窗口分发 + 侧栏面板 + 可折叠实时预览 |
 | 面板 | `frontend/src/views/*.vue` | 各功能配置面板 |
-| 悬浮窗 | `frontend/src/{Overlay,BoxOverlay,MusicOverlay}View.vue` | 各功能悬浮控件 |
+| 悬浮窗 | `frontend/src/{Overlay,BoxOverlay,MusicOverlay,PetOverlay}View.vue` | 各功能悬浮控件 |
 | API 封装 | `frontend/src/api/client.ts` | REST 封装 + WS 自动重连 |
 
 ## 数据库/数据位置
 
-- 运行数据目录 `data/`（已 gitignore）：`settings.json`（配置）、`scores/*.txt`（简谱）、`template.png`（白字模板）。
-- `data/` 用 `backend/core/config.py` 里的 `_app_root()` 定位。
+- 运行数据目录 `data/`（已 gitignore）：`settings.json`（配置）、`scores/*.txt`（旧谱）、`music/`（MIDI 原文件、索引、逐曲设置）、`template.png`（白字模板）、`pet_viewer/resources/`（外部协议/配置）、`pet_viewer/history.sqlite3`（真实遭遇）。
+- `data/` 由 `backend/core/config.py` 相对源码根目录定位，不依赖当前工作目录或旧打包程序位置。桌面按 `LOCO_BOX_ROOT`、可执行文件位置和工作目录查找项目，不回退到编译机器路径。
+- 精灵查看资源用 `scripts/import_pet_resources.py --source 目录` 验证导入；缺资源/驱动不阻塞主程序。不要提交游戏资源或会话数据。它的 `requires_arduino`、`blocks_region_selection` 均为 False；示例回放不写真实历史。
 
 ## 启动命令
 
@@ -81,4 +85,5 @@ cd frontend && npm run tauri dev              # 整机调试
 - 技术栈：`docs/TECH-STACK.md`；架构：`docs/ARCHITECTURE.md`
 - 功能 + 加功能指南：`docs/FEATURES.md`；后端 API：`docs/API.md`
 - 音乐域设计（音阶/键位/乐谱格式/时序/模式）：`docs/MUSIC.md`
+- 精灵查看（资源/驱动/性格/回放/历史）：`docs/PET_VIEWER.md`
 - 串口协议：`docs/PROTOCOL.md`；更新记录：`docs/CHANGELOG.md`

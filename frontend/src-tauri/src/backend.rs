@@ -195,10 +195,18 @@ fn is_project_root(path: &Path) -> bool {
 }
 
 fn project_root() -> Result<PathBuf, String> {
-    if let Some(root) = std::env::var_os("LOCO_BOX_ROOT") {
-        let root = PathBuf::from(root);
-        return if is_project_root(&root) {
-            Ok(root)
+    let explicit = std::env::var_os("LOCO_BOX_ROOT").map(PathBuf::from);
+    let starts: Vec<PathBuf> = [std::env::current_exe().ok(), std::env::current_dir().ok()]
+        .into_iter()
+        .flatten()
+        .collect();
+    resolve_project_root(explicit.as_deref(), &starts)
+}
+
+fn resolve_project_root(explicit: Option<&Path>, starts: &[PathBuf]) -> Result<PathBuf, String> {
+    if let Some(root) = explicit {
+        return if is_project_root(root) {
+            root.canonicalize().map_err(|e| e.to_string())
         } else {
             Err(format!(
                 "LOCO_BOX_ROOT 不是有效的项目目录：{}",
@@ -207,18 +215,13 @@ fn project_root() -> Result<PathBuf, String> {
         };
     }
     // Also work when launched from Explorer or after moving the repository.
-    for start in [std::env::current_exe().ok(), std::env::current_dir().ok()]
-        .into_iter()
-        .flatten()
-    {
+    for start in starts {
         if let Some(root) = start.ancestors().find(|path| is_project_root(path)) {
-            return Ok(root.to_path_buf());
+            return root.canonicalize().map_err(|e| e.to_string());
         }
     }
-    let compiled_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    if is_project_root(&compiled_root) {
-        return Ok(compiled_root);
-    }
+    // Never fall back to the build machine's source path: a relocated executable
+    // must not silently start a backend from an older checkout.
     Err("无法找到项目目录。请使用仓库中的 start.bat，或设置 LOCO_BOX_ROOT。".into())
 }
 
@@ -273,7 +276,26 @@ fn probe_backend() -> Probe {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_health_response;
+    use super::{resolve_project_root, valid_health_response};
+    use std::path::PathBuf;
+
+    #[test]
+    fn project_paths_follow_runtime_location_and_explicit_override() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let executable = root.join("frontend/src-tauri/target/release/app.exe");
+        assert_eq!(resolve_project_root(None, &[executable]).unwrap(), root);
+        assert_eq!(resolve_project_root(Some(&root), &[]).unwrap(), root);
+        let invalid = root.join("no-such-project");
+        assert!(resolve_project_root(Some(&invalid), &[root]).is_err());
+    }
+
+    #[test]
+    fn missing_runtime_project_does_not_use_compiled_source_directory() {
+        assert!(resolve_project_root(None, &[]).is_err());
+    }
 
     #[test]
     fn health_requires_expected_service_protocol_and_readiness() {

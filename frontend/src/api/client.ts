@@ -41,7 +41,7 @@ async function http<T>(path: string, options?: RequestInit, timeoutMs = 8000): P
       try {
         const body = await res.json()
         if (body?.detail) {
-          detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
+          detail = typeof body.detail === 'string' ? body.detail : body.detail.message ?? JSON.stringify(body.detail)
         }
       } catch {
         /* 响应可能没有 JSON 内容。 */
@@ -68,7 +68,6 @@ export async function getHealth(): Promise<Health> {
 }
 
 export const getStatus = () => http<Status>('/api/status')
-export const listPorts = () => http<{ ports: string[] }>('/api/ports')
 
 export const connectArduino = (port: string) =>
   http<{ ok: boolean; port: string | null }>('/api/arduino/connect', {
@@ -78,12 +77,6 @@ export const connectArduino = (port: string) =>
 
 export const disconnectArduino = () =>
   http<{ ok: boolean }>('/api/arduino/disconnect', { method: 'POST' })
-
-export const sendKey = (key: string, holdMs: number) =>
-  http<{ ok: boolean }>('/api/key', {
-    method: 'POST',
-    body: JSON.stringify({ key, hold_ms: holdMs }),
-  })
 
 export const listFeatures = () => http<{ features: FeatureMeta[] }>('/api/features')
 
@@ -113,21 +106,8 @@ export const captureBoxTemplate = () =>
     { method: 'POST' },
   )
 
-export const listScores = () => http<{ scores: string[] }>('/api/music/scores')
-
-export const loadScore = (name: string) =>
-  http<{ name: string; content: string }>(
-    `/api/music/scores/${encodeURIComponent(name)}`,
-  )
-
 export const openScoresFolder = () =>
   http<{ ok: boolean }>('/api/music/open_folder', { method: 'POST' })
-
-export const parseScore = (score: string) =>
-  http<{ count: number; notes: { key: string; pause: number }[] }>('/api/music/parse', {
-    method: 'POST',
-    body: JSON.stringify({ score }),
-  })
 
 export interface MusicState {
   playlist: string[]
@@ -135,29 +115,174 @@ export interface MusicState {
   mode: string
   running: boolean
   paused: boolean
+  phase: 'stopped' | 'preparing' | 'countdown' | 'playing' | 'paused' | 'finished' | 'error'
+  selected_song_id: string | null
+  playing_song_id: string | null
+  playing_name: string
+  position_ms: number
+  duration_ms: number
+  speed: number
+  countdown_remaining: number
+  revision: number
+  error: { code: string; message: string } | null
+  device: { connected: boolean; protocol: number; max_keys: number; midi_supported: boolean }
 }
 
+export interface MusicSong {
+  id: string
+  name: string
+  filename: string
+  format: 'midi' | 'txt'
+  duration_ms: number
+  note_count: number
+  track_count: number
+  imported_at?: string
+  legacy?: boolean
+}
+
+export interface MusicSettings {
+  selected_tracks: number[] | null
+  transpose: number
+  range_policy: 'degree' | 'nearest' | 'smooth'
+  root: number | null
+  conflict_policy: 'adapt'
+  mapping_version?: number
+  speed: number
+  skip_leading_silence: boolean
+}
+
+export interface MusicTrack {
+  id: number
+  name: string
+  channels: number[]
+  note_count: number
+  pitch_min: number | null
+  pitch_max: number | null
+  percussion: boolean
+}
+
+export interface MusicAnalysis {
+  source_notes: number
+  playable_notes: number
+  chord_count: number
+  max_keys: number
+  unmapped_notes: number
+  merged_notes: number
+  retrigger_conflicts: number
+  skipped_notes: number
+  capacity_conflicts: number
+  warnings: string[]
+  can_play: boolean
+  root_name?: string
+  repeated_mappings?: number
+  retimed_notes?: number
+  duration_ms: number
+}
+
+export interface MusicSongDetail {
+  song: MusicSong
+  tracks: MusicTrack[]
+  settings: MusicSettings
+  analysis: MusicAnalysis
+}
+
+export const listMusicLibrary = () => http<{ songs: MusicSong[] }>('/api/music/library', undefined, 30000)
+export const deleteMusicSong = (id: string) => http<{ ok: boolean; song_id: string; songs: MusicSong[]; state: MusicState }>(
+  `/api/music/songs/${encodeURIComponent(id)}`, { method: 'DELETE' }, 30000,
+)
+export const importMidi = (file: File) => http<{ song: MusicSong; duplicate: boolean }>(
+  `/api/music/import?filename=${encodeURIComponent(file.name)}`,
+  { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file }, 60000,
+)
+export const getMusicSong = (id: string) => http<MusicSongDetail>(`/api/music/songs/${encodeURIComponent(id)}`, undefined, 30000)
+export const saveMusicSettings = (id: string, settings: MusicSettings) => http<MusicSongDetail>(
+  `/api/music/songs/${encodeURIComponent(id)}/settings`, { method: 'PUT', body: JSON.stringify(settings) }, 30000,
+)
 export const getMusicState = () => http<MusicState>('/api/music/state')
 
-export const selectSong = (name: string) =>
-  http<{ ok: boolean }>('/api/music/select', {
+export const selectSong = (songId: string) =>
+  http<MusicState>('/api/music/select', {
     method: 'POST',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ song_id: songId }),
   })
 
-export const musicNext = () => http<{ ok: boolean }>('/api/music/next', { method: 'POST' })
+export const musicPlay = (songId?: string) => http<MusicState>('/api/music/play', {
+  method: 'POST', body: JSON.stringify(songId ? { song_id: songId } : {}),
+}, 30000)
 
-export const musicPrev = () => http<{ ok: boolean }>('/api/music/prev', { method: 'POST' })
+export const musicStop = () => http<MusicState>('/api/music/stop', { method: 'POST' }, 15000)
+export const musicNext = () => http<MusicState>('/api/music/next', { method: 'POST' }, 30000)
+export const musicPrev = () => http<MusicState>('/api/music/prev', { method: 'POST' }, 30000)
 
 export const setMusicMode = (mode: string) =>
-  http<{ ok: boolean }>('/api/music/mode', {
+  http<MusicState>('/api/music/mode', {
     method: 'POST',
     body: JSON.stringify({ mode }),
   })
 
-export const musicPause = () => http<{ ok: boolean }>('/api/music/pause', { method: 'POST' })
+export const musicPause = () => http<MusicState>('/api/music/pause', { method: 'POST' })
 
-export const musicResume = () => http<{ ok: boolean }>('/api/music/resume', { method: 'POST' })
+export const musicResume = () => http<MusicState>('/api/music/resume', { method: 'POST' })
+
+export interface PetDetails {
+  id: string
+  name: string
+  base_id?: number | null
+  nature: string
+  nature_id?: number | null
+  nature_hint: string
+  nature_tip: string
+  nature_up?: string | null
+  nature_down?: string | null
+  nature_modified?: boolean
+  nature_effective?: string
+  bloodline_label: string
+  bloodline_tip?: string
+  shiny: boolean | null
+  shiny_hint?: string
+  voice: number | null
+  voice_hint: string
+  voice_tip?: string
+  height: number | null
+  height_hint: string
+  height_tip?: string
+  weight: number | null
+  weight_hint: string
+  weight_tip?: string
+  medal?: string
+  complete?: boolean
+}
+
+export interface PetViewerState {
+  session_id: string
+  running: boolean
+  phase: string
+  status: string
+  message: string
+  source: string
+  revision: number
+  resources: { ready: boolean; message: string; version?: string }
+  npcap_available: boolean
+  packet_count: number
+  decoded_count: number
+  pets: PetDetails[]
+  selected: PetDetails | null
+  battle_id?: string | null
+  history_error?: string
+}
+
+export interface PetAdapter { name: string; description: string }
+export interface PetHistoryEntry extends Omit<PetDetails, 'id'> { key: number | string; seen_at: string }
+
+export const getPetViewerState = () => http<PetViewerState>('/api/pet-viewer/state')
+export const getPetAdapters = () => http<{ available: boolean; adapters: PetAdapter[]; message: string }>('/api/pet-viewer/adapters')
+export const runPetDemo = () => http<PetViewerState>('/api/pet-viewer/demo', { method: 'POST' }, 15000)
+export const selectPet = (petId: string) => http<PetViewerState>('/api/pet-viewer/select', {
+  method: 'POST', body: JSON.stringify({ pet_id: petId }),
+})
+export const getPetHistory = (limit = 50, offset = 0) => http<{ items: PetHistoryEntry[]; total: number }>(
+  `/api/pet-viewer/history?limit=${limit}&offset=${offset}`,
+)
 
 export interface WsHandlers {
   onFrame?: (data: string) => void

@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend import state
-from backend.api import routes, ws
+from backend.api import music, pet_viewer, routes, ws
 from backend.core.preview import start_preview_loop
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
                 await asyncio.to_thread(feature.stop)
             except Exception:
                 logger.exception("Failed to stop feature %s", feature.id)
-        await asyncio.to_thread(state.arduino.disconnect)
+        await asyncio.to_thread(state.arduino.disconnect, force=True)
         state.bus.set_loop(None)
 
 
@@ -48,4 +48,6 @@ app.add_middleware(
 )
 
 app.include_router(routes.router)
+app.include_router(music.router)
+app.include_router(pet_viewer.router)
 app.include_router(ws.router)

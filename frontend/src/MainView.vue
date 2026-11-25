@@ -39,6 +39,7 @@ const featureDescriptions: Record<string, string> = {
   box_monitor: '识别与自动截图',
   throw: '快捷循环操作',
   music: '曲目与演奏控制',
+  pet_viewer: '野生精灵与性格',
 }
 
 function panel(loader: () => Promise<{ default: Component }>) {
@@ -49,6 +50,7 @@ const panels: Record<string, Component> = {
   box_monitor: panel(() => import('./views/BoxMonitorConfig.vue')),
   throw: panel(() => import('./views/ThrowConfig.vue')),
   music: panel(() => import('./views/MusicConfig.vue')),
+  pet_viewer: panel(() => import('./views/PetViewerConfig.vue')),
 }
 const activePanel = computed(() => panels[activeId.value] ?? null)
 

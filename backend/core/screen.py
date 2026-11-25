@@ -11,10 +11,6 @@ from loco_box.image_ops import bgr_to_rgb, grab_region
 from loco_box.types import Region
 
 
-def grab_bgr(region: Region) -> np.ndarray:
-    return grab_region(region)
-
-
 def encode_jpeg_b64(
     bgr: np.ndarray, quality: int = 70, max_size: Optional[Tuple[int, int]] = None,
 ) -> str:

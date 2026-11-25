@@ -16,8 +16,6 @@ async function mockBackend(page: Page, state: { online: boolean; configOnline?: 
       if (state.configOnline === false) return route.abort('connectionrefused')
       body = { config: { delay: 2, threshold: 0.45, brightness: 200, trigger_delay: 5 } }
     }
-    else if (path === '/api/music/state') body = { playlist: [], current: '', mode: 'single', running: false, paused: false }
-    else if (path === '/api/music/scores') body = { scores: [] }
     else throw new Error(`Unexpected API request in startup test: ${path}`)
     return route.fulfill({ json: body, headers: { 'Access-Control-Allow-Origin': '*' } })
   })

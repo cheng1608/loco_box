@@ -15,7 +15,10 @@ pub fn run() {
             overlays::show_box_overlay,
             overlays::hide_box_overlay,
             overlays::show_music_overlay,
-            overlays::hide_music_overlay
+            overlays::hide_music_overlay,
+            overlays::show_pet_overlay,
+            overlays::hide_pet_overlay,
+            overlays::open_npcap_download
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

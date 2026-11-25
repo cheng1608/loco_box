@@ -7,6 +7,10 @@ build/
 data/
 *.spec
 
+# Local music library.
+/scripts/music/
+/scripts/键盘谱/
+
 .venv/
 venv/
 env/

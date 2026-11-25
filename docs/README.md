@@ -8,8 +8,9 @@
 |----------|------|
 | 一句话了解这是什么 + 各技术栈版本 | [TECH-STACK.md](TECH-STACK.md) |
 | 系统怎么拼起来的：进程 / 窗口 / 数据流 / 线程 / 串口策略 | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| 三个功能怎么用、怎么给按键、**如何加新功能** | [FEATURES.md](FEATURES.md) |
+| 各功能怎么用、怎么给按键、**如何加新功能** | [FEATURES.md](FEATURES.md) |
 | 自动演奏的域设计：手碟音阶 / 键位映射 / 乐谱格式 / 时序 / 模式 | [MUSIC.md](MUSIC.md) |
+| 精灵查看：协议资源 / Npcap / 原始性格 / 示例回放 / 本机历史 | [PET_VIEWER.md](PET_VIEWER.md) |
 | 后端 REST / WebSocket / Feature 基类 / 配置格式 | [API.md](API.md) |
 | Arduino 串口文本协议与固件（含字母大小写语义） | [PROTOCOL.md](PROTOCOL.md) |
 | 最近几轮改了哪些东西（含踩坑经验） | [CHANGELOG.md](CHANGELOG.md) |

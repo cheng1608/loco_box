@@ -4,7 +4,7 @@ import { isTauri } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import ViewLoading from './components/ViewLoading.vue'
 
-type ViewMode = 'main' | 'overlay' | 'box_overlay' | 'music_overlay'
+type ViewMode = 'main' | 'overlay' | 'box_overlay' | 'music_overlay' | 'pet_overlay'
 
 function detectWindow(): ViewMode {
   if (!isTauri()) return 'main'
@@ -13,6 +13,7 @@ function detectWindow(): ViewMode {
     if (label === 'overlay') return 'overlay'
     if (label === 'box_overlay') return 'box_overlay'
     if (label === 'music_overlay') return 'music_overlay'
+    if (label === 'pet_overlay') return 'pet_overlay'
   } catch {
     /* ignore */
   }
@@ -26,6 +27,7 @@ const views = {
   overlay: () => import('./OverlayView.vue'),
   box_overlay: () => import('./BoxOverlayView.vue'),
   music_overlay: () => import('./MusicOverlayView.vue'),
+  pet_overlay: () => import('./PetOverlayView.vue'),
 }
 const currentView = defineAsyncComponent({
   loader: views[viewMode],

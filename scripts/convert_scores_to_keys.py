@@ -15,11 +15,9 @@ import re
 import sys
 from pathlib import Path
 
-# 旧音名 → 键位（与 music.py 旧 NOTE_TO_KEY 一致）
-NOTE_TO_KEY = {
-    "L6": "B", "M3": "F", "M4": "G", "M5": "H",
-    "M6": "J", "M7": "K", "H1": "T", "H2": "Y", "H3": "U",
-}
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from loco_box.handpan import NOTE_TO_KEY
 
 SCORES_DIR = Path(__file__).resolve().parents[1] / "data" / "scores"
 

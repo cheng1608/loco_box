@@ -10,6 +10,7 @@
 
 import os
 from pathlib import Path
+from typing import List
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -27,6 +28,16 @@ TRACK_OPTIONS = [("自动旋律轨", "auto"), ("全部轨道", None)]
 STRATEGY_OPTIONS = [("音级折叠（保音准）", "degree"), ("就近映射（保连贯）", "nearest"), ("平滑映射（折中）", "smooth")]
 POLY_OPTIONS = [("最高音", "top"), ("最低音", "bottom"), ("最大力度", "loudest")]
 ROOT_OPTIONS = [("自动检测", None)] + [(str(i), i) for i in range(12)]
+
+
+def discover_midi_files(directory: Path) -> List[Path]:
+    """Find MIDI inputs in the sample library, including nested directories."""
+    if not directory.is_dir():
+        return []
+    return sorted(
+        path for path in directory.rglob("*")
+        if path.is_file() and path.suffix.lower() in (".mid", ".midi")
+    )
 
 
 class App:
@@ -95,13 +106,7 @@ class App:
         return box, value_map
 
     def _load_midi_list(self) -> None:
-        full = []
-        if MIDI_DIR.is_dir():
-            full = [
-                str(MIDI_DIR / p.name)
-                for p in sorted(MIDI_DIR.iterdir())
-                if p.is_file() and p.suffix.lower() == ".mid"
-            ]
+        full = [str(path) for path in discover_midi_files(MIDI_DIR)]
         self.midi_box["values"] = full
         if full:
             self.midi_var.set(full[0])

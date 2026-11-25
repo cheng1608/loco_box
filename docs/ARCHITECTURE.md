@@ -6,6 +6,8 @@
 
 Rust 后台线程检查后端身份与协议，未运行时用 `.venv` 的 Python 启动 `backend.runner`，状态由 `backend_status` 暴露，日志存于 `data/logs/backend.log`。界面同时加载，等待服务的过程中显示连接状态并自动重试。主窗口关闭后 Rust 关闭后端 stdin 管道，runner 请求 Uvicorn 正常退出并运行 lifespan 清理，等待最多 4 秒，超时才强制终止。外部独立启动的兼容后端可以复用，桌面不终止它。
 
+项目路径优先采用显式 `LOCO_BOX_ROOT`，否则从当前可执行文件及工作目录向上查找；不再回退到编译时的源码绝对路径，避免移动程序后意外运行旧仓库。Python 的数据目录固定相对当前后端源码定位。
+
 Windows 管道监听使用 `PeekNamedPipe` 每 100ms 检查断开，不发起阻塞读取。本机 Conda Python 3.9 + NumPy/OpenBLAS 组合下，阻塞 stdin 读取会卡住之后的 DLL 加载与线程创建，已通过独立子进程回归验证。不能将其改回 `stream.read()` 或阻塞 `ReadFile`。
 
 ```
@@ -26,7 +28,7 @@ Windows 管道监听使用 `PeekNamedPipe` 每 100ms 检查断开，不发起阻
 | `main` | `MainView.vue`（侧栏切换 3 面板 + 右可折叠实时预览） | 1120×760，最小 900×600 | 常规窗口 | 启动即显示 |
 | `overlay` | `OverlayView.vue`（丢球：开关按钮 + 5s 冷却） | 220×110 | 无边框/透明/置顶/`skip_taskbar` | 丢球面板「启动」经 `toggle_overlay` 显隐 |
 | `box_overlay` | `BoxOverlayView.vue`（计数 + 最近截图） | 320×320 | 同上 | 惊喜盒子面板点「开始监控」后 `show_box_overlay` |
-| `music_overlay` | `MusicOverlayView.vue`（播放器四按钮） | 320×150 | 同上 + **`.focusable(false)`**（不抢游戏键盘焦点） | 自动演奏面板点「启动」后 `show_music_overlay` |
+| `music_overlay` | `MusicOverlayView.vue`（播放器控制与进度） | 320×150 | 同上 + **`.focusable(false)`**（不抢游戏键盘焦点） | 自动演奏面板点「打开悬浮窗」后 `show_music_overlay` |
 
 > **为什么丢球/惊喜盒子悬浮窗没加 `focusable(false)`**：丢球和惊喜盒子的按键目标是「当时获得焦点的窗口」（鼠标点在游戏上即可），悬浮窗只是按钮面板；而自动演奏的 HID 键必须落到游戏/记事本，悬浮窗若可聚焦会抢走键盘焦点导致按键敲进 App。若后续某功能出现「按键打在悬浮窗上」，先给该窗口补 `.focusable(false)`。
 >
@@ -60,9 +62,9 @@ ws.py 从队列取 → send_json 到浏览器
 见 `docs/PROTOCOL.md` 物理层细节。架构层要点：
 
 - ATmega32U4 打开串口 = 硬件复位 → USB HID 断开重连需 ~3s。
-- 因此 `ArduinoController`（`backend/core/arduino.py`）做成**全局单例持久连接**：谁缺连接谁去 `connect()`（内部加锁、已连接直接返回），成功后 `settings.json` 记住本次 COM 口兜底。之后 `send()` 只 `write()`，无 sleep。
+- 因此 `ArduinoController`（`backend/core/arduino.py`）做成**全局单例持久连接**：谁缺连接谁去 `connect()`（内部加锁、已连接直接返回），成功后 `settings.json` 记住本次 COM 口兜底，能力握手只做一次。旧命令和状态写入串行化，会话建立/心跳/停止带确认。
 - COM 解析 `AUTO`：`SerialBridge.find_arduino()`（扫描述含 arduino/micro）→ 失败用配置 `com_port` → 再失败报错。
-- 三个功能拿到同一 `ctx.arduino`。串口只被它独占；**新功能不要自建 `SerialBridge` 连接**。
+- 三个功能拿到同一 `ctx.arduino`，运行时必须 acquire 所有权，暂停演奏仍占有设备，finally 中 release。串口只被它独占；**新功能不要自建 `SerialBridge` 连接**。
 
 ## Feature 生命周期
 
@@ -84,7 +86,7 @@ ws.py 从队列取 → send_json 到浏览器
 面板设 4 段时间 → 「启动」仅 `toggle_overlay` 显隐悬浮窗；真正开关在悬浮窗里（`startFeature/stopFeature('throw')`）。后端 `_loop` 循环 `MOUSE_LEFT:mouse_hold` → sleep → `LSHIFT:shift_hold` → sleep。无识别。
 
 ### 自动演奏 `music`
-面板展示歌单并选曲（`select_song`），「启动」只 `show_music_overlay`；播放/暂停/切歌/模式全在悬浮窗。播放线程：每首歌前 3s 倒计时（首曲与 Arduino 连接并行）→ 逐音符 `send(key, HOLD_MS=50)`，按谱面停顿 `sleep`。支持五播放模式、音符边界暂停续播、手动切歌打断。实现细节见 `docs/FEATURES.md`「自动演奏」；域设计（音阶/键位/乐谱格式/时序）见 `docs/MUSIC.md`。
+主窗直接导入 MIDI、选择音轨、适配音域并分析冲突；主窗与悬浮窗共享状态。选中曲与正在演奏曲分离，播放使用绝对起音时间及完整键状态，和弦一次发送。暂停冻结时钟并释放当前会话，继续不重敲已响音；设备独占、会话和序号共同防止旧任务串键。详见 [MUSIC.md](MUSIC.md) 和 [PROTOCOL.md](PROTOCOL.md)。
 
 ## 实时预览（主界面右侧）
 

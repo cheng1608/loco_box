@@ -20,7 +20,7 @@ fn show(app: &AppHandle, label: &str, width: f64, height: f64) -> Result<(), Str
         .shadow(false)
         .resizable(false)
         .focused(false)
-        .focusable(label != "music_overlay")
+        .focusable(!matches!(label, "music_overlay" | "pet_overlay"))
         .inner_size(width, height)
         .visible(false)
         .build()
@@ -97,4 +97,33 @@ pub async fn show_music_overlay(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn hide_music_overlay(app: AppHandle) -> Result<(), String> {
     hide(&app, "music_overlay")
+}
+
+#[tauri::command]
+pub async fn show_pet_overlay(app: AppHandle) -> Result<(), String> {
+    show(&app, "pet_overlay", 400.0, 360.0)
+}
+
+#[tauri::command]
+pub async fn hide_pet_overlay(app: AppHandle) -> Result<(), String> {
+    hide(&app, "pet_overlay")
+}
+
+/// Open the driver publisher's fixed URL only after the user clicks its link.
+#[tauri::command]
+pub fn open_npcap_download() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", "https://npcap.com/#download"])
+            .creation_flags(0x08000000)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("无法打开浏览器，请访问 https://npcap.com/#download：{error}"))
+    }
+    #[cfg(not(windows))]
+    {
+        Err("实时监听需要 Windows；Npcap 下载地址：https://npcap.com/#download".into())
+    }
 }

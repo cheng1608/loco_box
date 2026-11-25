@@ -1,112 +1,81 @@
-# Arduino 串口协议
+# Arduino 串口与和弦协议 v2
 
-## 物理层
+固件入口是 `scripts/arduino_bridge/arduino_bridge.ino`，状态机在同目录 `BridgeState.h`。目标为 ATmega32U4 的 Arduino Micro / Leonardo 兼容板。
 
-- **接口**：USB CDC Serial (COM 口)
-- **波特率**：9600 bps
-- **数据位**：8
-- **停止位**：1
-- **校验**：无
-- **流控**：无
+## 连接与能力
 
-## 数据链路层
+使用 USB CDC、9600 baud、8N1，无流控。ATmega32U4 使用原生 USB，不应把配置的 baud 值当成传统 UART 吞吐上限。Arduino 官方说明见 [Serial.begin](https://docs.arduino.cc/language-reference/en/functions/communication/serial/begin/)。
 
-**帧格式**：`<命令>\n`
+Python 通过唯一的 `ArduinoController` 持久连接，首次打开后等待板卡和 USB 稳定，再探测能力；后续按键和切歌不重新打开串口。打开原生 USB CDC 并不必然使所有 ATmega32U4 板卡复位。老固件探测超时后按 protocol 1 处理，MIDI 与 TXT 均使用单键演奏，和弦顺序敲出。
 
-- 每条命令以换行符 `\n` 结尾
-- 命令不区分大小写（固件内部转大写处理）
-- 同一时刻只处理一条命令
+每帧为 ASCII 行，以 LF 或 CR 结束；最大命令内容 95 字节。超长帧被整帧丢弃，不允许截断后误执行。v2 命令使用大写，session 区分大小写，允许 `[A-Za-z0-9_-]`，长度 1～32。
 
-## 命令参考
+| 请求 | 成功应答 / 作用 |
+|---|---|
+| `HELLO 2` | `CAPS 2 <max_keys> 1500 2.0.0`，max_keys 为 9 或 6 |
+| `BEGIN <session>` | `OK BEGIN <session>`，全释放并建立新会话；同会话重试幂等 |
+| `STATE <session> <seq> <mask>` | 设置完整键集合，一次键盘 HID 报告；成功无逐帧 ACK |
+| `PING <session>` | `OK PING <session> <lastseq>`，续期 watchdog |
+| `STOP <session>` | `OK STOP <session>`，全释放并废弃会话 |
+| `PANIC` | `OK PANIC`，无条件释放键盘和鼠标、废弃会话 |
 
-### 键盘按键
+seq 为十进制 uint32，mask 为十进制 0～511。序号递增，同序号同 mask 可重试；旧序号或同序号不同 mask 拒绝。会话失效后旧 STATE 不会恢复按键。后端约每 350ms PING，固件 1500ms 无有效会话活动则全释放。
 
-| 命令 | 键码 | 说明 |
-|------|------|------|
-| `0` ~ `9` | `0` ~ `9` | 数字键 |
-| `A` ~ `Z` | a ~ z | **大小写语义见下方注意** |
-| `a` ~ `z` | a ~ z | 原始字母键 |
-| `ESC` | `KEY_ESC` | Escape |
-| `TAB` | `KEY_TAB` | Tab |
-| `SPACE` | ` ` | 空格 |
-| `ENTER` | `KEY_RETURN` | 回车 |
-| `LCTRL` | `KEY_LEFT_CTRL` | 左 Ctrl |
-| `LSHIFT` | `KEY_LEFT_SHIFT` | 左 Shift |
-| `LEFT` | `KEY_LEFT_ARROW` | 方向左 |
-| `RIGHT` | `KEY_RIGHT_ARROW` | 方向右 |
-| `UP` | `KEY_UP_ARROW` | 方向上 |
-| `DOWN` | `KEY_DOWN_ARROW` | 方向下 |
-| `F1` ~ `F12` | `KEY_F1` ~ `KEY_F12` | 功能键 |
+mask 的 bit 0～8 固定为 `B F G H J K T Y U`，例如 B+F+G 是 7，九键全按是 511，全释放是 0。它表示完整当前状态，不是增量按键列表。
 
-### 长按
+错误应答为 `ERR <code>`：`SESSION`、`SEQUENCE`、`CAPACITY`、`BUSY`、`ARGUMENT`、`DURATION`、`COMMAND`、`FRAME_TOO_LONG`。STATE 没有成功 ACK，下一次写入/心跳会收集错误。STOP 应答失败时主机尝试 PANIC；释放仍失败则关闭连接，固件 watchdog 最终清理会话。
 
-| 格式 | 示例 | 说明 |
-|------|------|------|
-| `<键>:<毫秒>` | `1:500` | 按住 1 键 500ms 后松开 |
-| `<键>:<毫秒>` | `LCTRL:2000` | 按住左 Ctrl 2 秒后松开 |
+## 和弦 HID 报告
 
-### 鼠标
+默认自定义键盘 bitmap descriptor，一次 `HID().SendReport` 提交完整键集合。键盘修饰位与 usage 0～119 独立表示，可同时触发全部九音。鼠标保留独立 report ID。
 
-| 命令 | 说明 |
-|------|------|
-| `MOUSE_LEFT` | 鼠标左键点击 |
-| `MOUSE_RIGHT` | 鼠标右键点击 |
+`LOCOBOX_6KRO=1` 改为标准六键数组报告，用于需兼容六键报告的环境；后端依据能力在播放前检查容量。不能将 Arduino 标准 Keyboard 库的六键缓存与自定义报告混用。原库接口和报告结构可查 [Arduino Keyboard](https://github.com/arduino-libraries/Keyboard/blob/master/src/Keyboard.h)。
 
-鼠标同样支持长按：`MOUSE_LEFT:200` = 按住左键 200ms 后松开（`Mouse.press → delay → Mouse.release`）。不带时长则 `Mouse.click()` 瞬时点击。
+编译成功不等于游戏实机兼容已经验证。九键模式需要在实际 Windows/游戏环境验证同时触发；如游戏不识别，可编译六键模式，软件会明确报告超容量音符。
 
-### 字母大小写语义（重要）
+## 旧版命令兼容
 
-HID 键盘协议里**大写字母 = SHIFT + 对应键**。固件 `keyToCode()` 刻意把单个大写字母 `A`~`Z` **转成小写**后再 `Keyboard.press`，即发送 `"A"` 与 `"a"` 都会敲出小写 `a`、且**不会带 Shift**。这是为了绕过「HID 大写 = 组合键」的坑，确保自动演奏敲出的都是干净的单键。
+支持 `<KEY>[:<hold_ms>]`，时长 0～60000ms。字母 A～Z / a～z 都发送不带 Shift 的原始字母键。命名键包括数字、ESC、TAB、SPACE、ENTER、LCTRL、RCTRL、LSHIFT、RSHIFT、方向键和 F1～F12；鼠标为 MOUSE_LEFT / MOUSE_RIGHT。
 
-含义：
-- 想敲小写字母 → 直接发 `A`~`Z` 或 `a`~`z` 都行（自动演奏即如此：发的是大写 `F/G/H/...`）。
-- 固件**无法**产生大写字母（无对应命名键）。如需大写，需给固件加 `Shift` 组合或特殊处理。
-- 多字符命令（`ESC`、`F1`、`MOUSE_LEFT` 等）内部仍先 `toUpperCase()` 再匹配，不受此影响。
+例如 `F:50`、`1:50`、`MOUSE_LEFT:200`。不带时长最短 1ms，仅供通用命令兼容；游戏按键应至少 50ms。v2 不使用阻塞 delay 保持按键，而是按每个键的截止时间释放，因此串口 STOP/PANIC 可以及时处理。音乐会话期间拒绝旧式键鼠命令。
 
-## Python 调用示例
+旧固件仍采用原有阻塞单键逻辑，不能做到和弦或立即全释放。应用停止旧 TXT 后已发送短按按原定时结束。
 
-```python
-from loco_box.serial_bridge import SerialBridge
+## 后端使用
 
-bridge = SerialBridge("AUTO")  # AUTO = 自动检测 COM 口
-bridge.connect()
-bridge.send("1")               # 点击数字 1
-bridge.send("1", 500)          # 按住 1 半秒
-bridge.send("ESC")             # 按 ESC
-bridge.send("MOUSE_LEFT")      # 鼠标左键点击
-bridge.send("LCTRL:3000")      # 按住左 Ctrl 3 秒
-bridge.disconnect()
+所有功能必须先 `ctx.arduino.acquire(feature_id)`，连接和发送时带 `owner=feature_id`，在 finally 中 `release(feature_id)`。同一时刻只有一个功能拥有设备，暂停演奏仍保留所有权。manual 仅能向空闲设备发键。停止后迟到的命名 worker 写入和重新连接都会被拒绝；查询已有连接不会重新打开串口。
+
+演奏使用 `begin_music(session)`、`send_state(session, seq, mask)`、`heartbeat(session)`、`end_music(session)`。release 在同一串口锁内全释放再清 owner，防止交错；状态/能力读取使用缓存，不等待握手 I/O。
+
+手动断开会先停止所有 Feature，再关闭连接。应用 shutdown 同样先停止功能，最终 `disconnect(force=True)`。
+
+## 编译与烧录
+
+在 Arduino IDE 中使用「文件 → 打开」，选择仓库里的 `scripts/arduino_bridge/arduino_bridge.ino`，直接打开现成工程，无需复制代码。安装 Arduino AVR Boards 和 Mouse 库，按实际板选择 Micro 或 Leonardo。
+
+工程的两个文件必须同时存在，且内容不同：
+
+```text
+arduino_bridge/
+├── arduino_bridge.ino   主程序，包含 setup()、loop() 和串口处理
+└── BridgeState.h        状态机类，以 #ifndef LOCOBOX_BRIDGE_STATE_H 开头
 ```
 
-> 实际程序不走「每次 connect/disconnect」：启动/首次运行时 `connect()` 一次并等 ~3s 复位完成，之后**保持连接**、按键瞬间发送（见 `docs/ARCHITECTURE.md` 串口策略）。上面的 connect/disconnect 仅为演示协议用法。
->
-> 当前架构里 `SerialBridge` 被 `backend/core/arduino.py` 的 `ArduinoController` 单例封装（`ctx.arduino`），所有 Feature 共享同一个持久连接，**不应**再各自直接 new `SerialBridge`。
+IDE 中 `BridgeState.h` 会作为另一个标签页显示。不要把 `.ino` 主程序再次粘贴到 `.h` 标签中：主程序包含 `#include "BridgeState.h"`，复制进去会使头文件递归包含自己，出现大量 `#include nested too deeply` 错误。仅加 `#pragma once` 或删除该 include 不能恢复丢失的状态机类，需要恢复完整正确的 `BridgeState.h`。
 
-## Arduino 固件逻辑
+如果文件刚被外部工具修复，关闭当前工程，遇到保存旧编辑内容的询问选择不保存，再重新打开 `.ino`，让 IDE 读取磁盘上的两个文件。先点击「验证」编译，通过后再上传。固件验证命令只编译，不自动刷写。
 
-固件源码：`scripts/arduino_bridge/arduino_bridge.ino`（Arduino IDE 上传，板型选 Arduino Leonardo / Micro）。
+可复现命令（已安装 Arduino CLI）：
 
-```
-loop():
-  读串口字节
-    → 遇到 \n 或 \r → 解析 cmdbuffer → execute()
-    → 其他字符 → 追加到 cmdBuffer
+```powershell
+arduino-cli core update-index
+arduino-cli core install arduino:avr@1.8.8
+arduino-cli lib install Mouse@1.0.1
+arduino-cli compile --fqbn arduino:avr:micro scripts/arduino_bridge
+arduino-cli compile --fqbn arduino:avr:leonardo scripts/arduino_bridge
 
-execute(raw):
-  解析 "键:时长" 格式
-  → 查找键码
-  → 时长 > 0 → press → delay → release (长按)
-  → 时长 = 0 → write (点击)
-  → 鼠标命令 → 时长>0 则 press→delay→release，否则 Mouse.click()
+# 六键兼容模式
+arduino-cli compile --fqbn arduino:avr:micro --build-property compiler.cpp.extra_flags=-DLOCOBOX_6KRO=1 scripts/arduino_bridge
 ```
 
-> **游戏帧问题**：`Keyboard.write()` 瞬时按下/松开太快，多数游戏检测不到。因此**长按必须用 `键:毫秒`** 形式（按住 ≥50ms 再松开）。`music.py` 的 `HOLD_MS = 50` 是已验证的最小有效值；丢球/惊喜盒子同样带 hold。
-
-## 故障排查
-
-| 现象 | 可能原因 | 解决方案 |
-|------|----------|----------|
-| `find_arduino()` 返回 None | Arduino 未插或驱动未装 | 检查 USB 连接 |
-| `connect()` 返回 False | 串口被占用（如 Arduino IDE） | 关闭 IDE 串口监视器 |
-| 发送成功但游戏无反应 | Arduino 复位后 HID 未就绪 | 连接后等 3s 再发送 |
-| COM 口号码变化 | Windows 重新分配 | 使用 `AUTO` 模式自动检测 |
+CI 编译 Micro / Leonardo 的两种模式，并执行可在桌面运行的固件状态机测试。后端串口测试使用内存中的假设备，不会打开真实 COM 口。

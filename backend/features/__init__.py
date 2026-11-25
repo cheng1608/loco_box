@@ -23,6 +23,9 @@ class FeatureContext:
 class Feature(ABC):
     id: str = ""
     name: str = ""
+    # Read-only observers can run independently of the input device and capture UI.
+    requires_arduino: bool = True
+    blocks_region_selection: bool = True
     # 参数声明（供前端渲染表单 / 文档）：[{key, label, type, default, ...}]
     config_schema: List[Dict[str, Any]] = []
 
@@ -54,6 +57,6 @@ def register(cls: Type[Feature]) -> Type[Feature]:
 
 
 def create_features(ctx: FeatureContext) -> Dict[str, Feature]:
-    from backend.features import box_monitor, music, throw  # noqa: F401 触发注册
+    from backend.features import box_monitor, music, pet_viewer, throw  # noqa: F401 触发注册
 
     return {fid: cls(ctx) for fid, cls in _REGISTRY.items()}

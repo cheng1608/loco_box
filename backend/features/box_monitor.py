@@ -7,9 +7,9 @@
 import threading
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
+from backend.core.arduino import DeviceBusyError
 from backend.core.config import TEMPLATE_FILE
 from backend.features import Feature, FeatureContext, register
-from loco_box.serial_bridge import SerialBridge
 from loco_box.types import Region
 
 if TYPE_CHECKING:
@@ -34,9 +34,12 @@ class BoxMonitorFeature(Feature):
         self._timer: Optional[threading.Timer] = None
         self._box_count = 0
         self._config: Dict[str, Any] = {}
+        self._lifecycle_lock = threading.RLock()
+        self._generation = 0
+        self._active = False
 
     def is_running(self) -> bool:
-        return self._monitor is not None and self._monitor.is_running()
+        return self._active
 
     def start(self, config: Dict[str, Any]) -> None:
         from loco_box.image_ops import load_bgr
@@ -67,39 +70,57 @@ class BoxMonitorFeature(Feature):
         if delay < 0:
             raise ValueError("延迟不能为负数")
 
-        if self._monitor:
-            self._monitor.stop()
+        with self._lifecycle_lock:
+            self.stop()
+            if not self.ctx.arduino.acquire(self.id):
+                raise DeviceBusyError("设备正在被其他功能使用，请先停止该功能")
+            self._active = True
+            generation = self._generation
+            self._config = dict(config)
+            self._box_count = 0
+            self.ctx.bus.publish_count(0)
 
-        self._config = config
-        self._box_count = 0
-        self.ctx.bus.publish_count(0)
+            # Every asynchronous callback belongs to this run. A stopped monitor
+            # may finish a capture later, but cannot send keys into a new run.
+            def guarded(callback):
+                def invoke(*args):
+                    with self._lifecycle_lock:
+                        if self._active and generation == self._generation:
+                            callback(*args)
+                return invoke
 
-        # 后台连接 Arduino（约 3s 复位），监控先行启动
-        com = SerialBridge.find_arduino() or self.ctx.config.get_global("com_port", "AUTO")
-        threading.Thread(target=self._connect_arduino, args=(com,), daemon=True).start()
-
-        self._monitor = MonitorThread(
-            monitor_region=template_region,
-            shot_region=region_b,
-            matcher=matcher,
-            delay_sec=delay,
-            threshold=threshold,
-            on_screenshot=self._on_screenshot,
-            on_status=lambda msg: self.ctx.bus.publish_status(msg),
-            on_error=self._on_error,
-            on_box_appear=self._on_box_appear,
-        )
-        self._monitor.start()
-        self.ctx.bus.publish_status("监控中")
+            try:
+                self._monitor = MonitorThread(
+                    monitor_region=template_region,
+                    shot_region=region_b,
+                    matcher=matcher,
+                    delay_sec=delay,
+                    threshold=threshold,
+                    on_screenshot=guarded(self._on_screenshot),
+                    on_status=guarded(self.ctx.bus.publish_status),
+                    on_error=guarded(self._on_error),
+                    on_box_appear=guarded(self._on_box_appear),
+                )
+                self._monitor.start()
+                threading.Thread(target=self._connect_arduino,
+                                 args=(generation,), daemon=True).start()
+                self.ctx.bus.publish_status("监控中")
+            except Exception:
+                self.stop()
+                raise
 
     def stop(self) -> None:
-        if self._monitor:
-            self._monitor.stop()
-            self._monitor = None
-        if self._timer:
-            self._timer.cancel()
-            self._timer = None
-        self.ctx.bus.publish_status("已停止")
+        with self._lifecycle_lock:
+            self._active = False
+            self._generation += 1
+            if self._monitor:
+                self._monitor.stop()
+                self._monitor = None
+            if self._timer:
+                self._timer.cancel()
+                self._timer = None
+            self.ctx.arduino.release(self.id)
+            self.ctx.bus.publish_status("已停止")
 
     # ── 模板持久化 ─────────────────────────────────
     def capture_template(self) -> Dict[str, Any]:
@@ -118,11 +139,18 @@ class BoxMonitorFeature(Feature):
         return {"ok": True, "valid": matcher.is_valid, "stroke_pixels": matcher.tpl_stroke_pixels}
 
     # ── Arduino ────────────────────────────────────
-    def _connect_arduino(self, com: str) -> None:
-        if self.ctx.arduino.connect(com):
-            self.ctx.bus.publish_status(f"Arduino 已就绪 · {self.ctx.arduino.port()}")
-        else:
-            self.ctx.bus.publish_status("Arduino 连接失败")
+    def _connect_arduino(self, generation: int) -> None:
+        with self._lifecycle_lock:
+            if not self._active or generation != self._generation:
+                return
+        connected = self.ctx.arduino.is_connected() or self.ctx.arduino.connect(owner=self.id)
+        with self._lifecycle_lock:
+            if not self._active or generation != self._generation:
+                return
+            if connected:
+                self.ctx.bus.publish_status(f"Arduino 已就绪 · {self.ctx.arduino.port()}")
+            else:
+                self._on_error("Arduino 连接失败")
 
     # ── 回调 ──────────────────────────────────────
     def _on_screenshot(self, image_bgr: "np.ndarray") -> None:
@@ -142,17 +170,24 @@ class BoxMonitorFeature(Feature):
             delay_ms = 0
         if self._timer:
             self._timer.cancel()
-        self._timer = threading.Timer(delay_ms / 1000.0, self._send_key)
+        self._timer = threading.Timer(delay_ms / 1000.0, self._send_key,
+                                      args=(self._generation,))
+        self._timer.daemon = True
         self._timer.start()
         self.ctx.bus.publish_status(f"按键已预约 · {delay_ms / 1000:.1f}s")
 
-    def _send_key(self) -> None:
-        self._timer = None
-        if not self.ctx.arduino.is_connected():
-            self.ctx.bus.publish_status("Arduino 断连")
-            return
-        self.ctx.arduino.press_key("1", hold_ms=50)
-        self.ctx.bus.publish_status("按键已发送")
+    def _send_key(self, generation: int) -> None:
+        with self._lifecycle_lock:
+            if not self._active or generation != self._generation:
+                return
+            self._timer = None
+            if not self.ctx.arduino.is_connected():
+                self._on_error("Arduino 断连")
+                return
+            if self.ctx.arduino.press_key("1", hold_ms=50, owner=self.id):
+                self.ctx.bus.publish_status("按键已发送")
+            else:
+                self._on_error("按键发送失败")
 
     def _on_error(self, msg: str) -> None:
         self.ctx.bus.publish_status(f"监控错误: {msg}")

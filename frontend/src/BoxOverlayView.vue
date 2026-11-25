@@ -1,39 +1,30 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { connectWs, stopFeature } from './api/client'
+import { useWindowDrag } from './composables/useWindowDrag'
 
 const boxCount = ref(0)
 const shotPreview = ref('')
 const statusText = ref('')
+const stopping = ref(false)
+const error = ref('')
+const startDrag = useWindowDrag()
 let closeWs: (() => void) | null = null
 
 async function closeAndStop() {
+  if (stopping.value) return
+  stopping.value = true
+  error.value = ''
   try {
     await stopFeature('box_monitor')
-  } catch {
-    /* ignore */
-  }
-  try {
     const { emit } = await import('@tauri-apps/api/event')
     await emit('box-monitor-stopped')
-  } catch {
-    /* 非 Tauri 环境忽略 */
-  }
-  try {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('hide_box_overlay')
-  } catch {
-    /* ignore */
-  }
-}
-
-async function startDrag(e: MouseEvent) {
-  if (e.button !== 0) return
-  try {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window')
-    await getCurrentWindow().startDragging()
-  } catch {
-    /* 非 Tauri 环境忽略 */
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    stopping.value = false
   }
 }
 
@@ -58,7 +49,7 @@ onUnmounted(() => closeWs?.())
     <div class="topbar" @mousedown="startDrag">
       <div class="grip" />
       <span class="title">惊喜盒子</span>
-      <button class="close" @mousedown.stop @click="closeAndStop">×</button>
+      <button class="close" title="停止并关闭" aria-label="停止并关闭" :disabled="stopping" @mousedown.stop @click="closeAndStop">×</button>
     </div>
     <div class="count">
       <span class="num">{{ boxCount }}</span>
@@ -68,6 +59,7 @@ onUnmounted(() => closeWs?.())
       <img v-if="shotPreview" :src="shotPreview" alt="截图" />
       <div v-else class="placeholder">{{ statusText || '等待截图…' }}</div>
     </div>
+    <div v-if="error" class="error" role="alert">{{ error }}</div>
   </div>
 </template>
 
@@ -154,4 +146,5 @@ onUnmounted(() => closeWs?.())
   color: #555;
   font-size: 13px;
 }
+.error { color: #f0abb2; font-size: 12px; overflow-wrap: anywhere; }
 </style>

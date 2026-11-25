@@ -6,7 +6,8 @@
     "main",
     "overlay",
     "box_overlay",
-    "music_overlay"
+    "music_overlay",
+    "pet_overlay"
   ],
   "permissions": [
     "core:default",

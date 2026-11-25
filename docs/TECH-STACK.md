@@ -18,6 +18,7 @@
 | 事件推送 | WebSocket | 同上 | `/ws`，事件总线广播 |
 | 截图 | mss + numpy + Pillow | `mss>=9.0.1` 等 | 主屏预览、区域截图、JPEG base64 |
 | 串口 | pyserial | `>=3.5` | 9600 baud → Arduino（经 `loco_box/serial_bridge.py`） |
+| MIDI | Mido | `>=1.3.0,<2` | 原始 MIDI type 0/1 读取，和弦与变速保留，按需加载 |
 | 图像识别 | numpy + Pillow（无 OpenCV） | — | `loco_box/matcher.py` 白字笔画指纹，纯 numpy 实现 |
 | 硬件 | Arduino ATmega32U4 | — | USB HID 键盘/鼠标（Leonardo/Micro 兼容板），固件 `scripts/arduino_bridge/arduino_bridge.ino` |
 | Python | CPython | 3.9（约束见下） | 运行 `.venv`；系统也装有 anaconda python 可跑同一套 |
@@ -31,7 +32,8 @@ loco_box/
 │   ├── runner.py             # 桌面父进程管道关闭后正常退出
 │   ├── state.py              # 单例装配：arduino / bus / config / features
 │   ├── api/
-│   │   ├── routes.py         # 全部 REST 端点
+│   │   ├── routes.py         # 通用 REST 端点
+│   │   ├── music.py          # 音乐曲库与播放器 REST 端点
 │   │   └── ws.py             # /ws WebSocket 转发
 │   ├── core/
 │   │   ├── arduino.py        # ArduinoController（共享持久连接单例）
@@ -39,6 +41,7 @@ loco_box/
 │   │   ├── events.py         # EventBus（跨线程事件 → WS 广播）
 │   │   ├── preview.py        # 全局实时预览循环（有订阅者才截主屏）
 │   │   └── screen.py         # 截图 + JPEG base64 编码
+│   ├── music/                # MIDI/TXT 解析、曲库、映射与播放时间线
 │   └── features/             # Feature 插件（box_monitor / throw / music）
 ├── frontend/                 # Vue3 + Tauri
 │   ├── src/
@@ -50,6 +53,7 @@ loco_box/
 │   │   ├── BoxOverlayView.vue        # 惊喜盒子悬浮窗
 │   │   ├── MusicOverlayView.vue      # 自动演奏悬浮窗（播放器控件）
 │   │   ├── components/MusicIcons.ts  # 内联 SVG 图标（无额外依赖）
+│   │   ├── composables/      # 轮询、播放器状态、悬浮窗拖拽
 │   │   └── api/client.ts     # REST 封装 + WS 自动重连
 │   └── src-tauri/
 │       ├── src/lib.rs        # 应用装配与 invoke 注册
@@ -58,10 +62,14 @@ loco_box/
 │       ├── tauri.conf.json   # 主窗口 1120×760、frontendDist、bundle
 │       └── capabilities/default.json  # 4 个窗口 + 窗口操作权限
 ├── loco_box/                 # 可复用 Python 库（识别/串口/框选/类型）
-├── data/                     # 运行数据（gitignore）：settings.json / scores/*.txt / template.png
+├── data/                     # 运行数据（gitignore）：settings.json / scores/ / music/ / template.png
 ├── scripts/
 │   ├── arduino_bridge/arduino_bridge.ino  # Arduino 固件
-│   └── test_*.py             # 串口/按键链路诊断脚本
+│   ├── diagnose_arduino.py   # 统一串口/按键诊断（--list 不连接设备）
+│   ├── midi2score.py / midi2score_gui.py  # 可选 MIDI → 单声部按键谱工具
+│   ├── convert_scores_to_keys.py        # 音名谱转换为按键谱
+│   └── handpan_sim.py        # 本地手碟模拟器
+├── tests/                    # 无硬件后端/串口/工具回归
 ├── docs/                     # 本文档目录
 └── CLAUDE.md / README.md
 ```
@@ -82,6 +90,6 @@ loco_box/
 
 ## 环境备注（可能踩坑）
 
-- `requirements.txt` 仅包含应用运行依赖，旧 customtkinter 已移除。MIDI 转换与手碟模拟器使用 `requirements-tools.txt` 中的可选依赖；Tkinter 仅用于系统区域框选和独立工具 GUI。
+- `requirements.txt` 包含应用运行依赖及 MIDI 解析所需的 Mido；命令行和 GUI 转谱工具无需额外依赖。手碟模拟器另需 `requirements-tools.txt` 中的 pygame；Tkinter 用于系统区域框选和独立工具 GUI。
 - 系统装有 anaconda python 与项目 `.venv` 两套解释器，都装了依赖；启动/重启后端统一用 `backend/main.py` 头注释里的 `.venv` 命令，避免版本漂移。
 - `data/` 已被 gitignore；`settings.json`（含 COM 口、各功能参数）不进版本库。

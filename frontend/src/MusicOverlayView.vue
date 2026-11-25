@@ -1,293 +1,58 @@
-<script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { usePolling } from './composables/usePolling'
-import {
-  connectWs,
-  getMusicState,
-  musicNext,
-  musicPause,
-  musicPrev,
-  musicResume,
-  setMusicMode,
-  startFeature,
-  stopFeature,
-} from './api/client'
-import {
-  PauseIcon,
-  PlayIcon,
-  RepeatAllIcon,
-  RepeatOneIcon,
-  SequentialIcon,
-  ShuffleIcon,
-  SingleIcon,
-  SkipNextIcon,
-  SkipPrevIcon,
-} from './components/MusicIcons'
+﻿<script setup lang="ts">
+import { computed, reactive, type Component } from 'vue'
+import { isTauri, invoke } from '@tauri-apps/api/core'
+import { emit } from '@tauri-apps/api/event'
+import { useWindowDrag } from './composables/useWindowDrag'
+import { MUSIC_MODES, MUSIC_MODE_NAMES, musicName, musicTime, useMusicPlayer } from './composables/useMusicPlayer'
+import { PauseIcon, PlayIcon, SkipNextIcon, SkipPrevIcon, RepeatAllIcon, RepeatOneIcon, SequentialIcon, ShuffleIcon, SingleIcon } from './components/MusicIcons'
 
-const running = ref(false)
-const paused = ref(false)
-const current = ref('')
-const mode = ref('sequential')
-const statusText = ref('')
-
-const MODES = ['sequential', 'single', 'repeat_one', 'repeat_all', 'shuffle']
-const MODE_NAMES: Record<string, string> = {
-  sequential: '列表播放',
-  single: '单曲播放',
-  repeat_one: '单曲循环',
-  repeat_all: '列表循环',
-  shuffle: '随机播放',
+const player = reactive(useMusicPlayer())
+const startDrag = useWindowDrag(cause => { player.error = String(cause) })
+const title = computed(() => musicName(player.state?.playing_name || player.state?.current || '') || '未选择曲目')
+const modeIcons: Record<string, Component> = { sequential: SequentialIcon, single: SingleIcon, repeat_one: RepeatOneIcon, repeat_all: RepeatAllIcon, shuffle: ShuffleIcon }
+const modeIcon = computed(() => modeIcons[player.state?.mode ?? 'sequential'] ?? SequentialIcon)
+const canPlay = computed(() => player.online && !player.pending && !player.preparing && !!(player.state?.selected_song_id || player.state?.playing_song_id))
+async function toggle() {
+  if (player.paused) await player.resume()
+  else if (player.active) await player.pause()
+  else await player.play()
 }
-
-let closeWs: (() => void) | null = null
-
-function displayName(name: string) {
-  return name.replace(/\.txt$/i, '') || '未选择'
+async function cycleMode() {
+  const index = MUSIC_MODES.indexOf(player.state?.mode ?? 'sequential')
+  await player.mode(MUSIC_MODES[(index + 1) % MUSIC_MODES.length])
 }
-
-const title = computed(() => displayName(current.value))
-
-const modeIcon = computed(() => {
-  const map: Record<string, unknown> = {
-    sequential: SequentialIcon,
-    single: SingleIcon,
-    repeat_one: RepeatOneIcon,
-    repeat_all: RepeatAllIcon,
-    shuffle: ShuffleIcon,
-  }
-  return map[mode.value] || SequentialIcon
-})
-
-const playIcon = computed(() => (running.value && !paused.value ? PauseIcon : PlayIcon))
-
-async function refreshState() {
-  try {
-    const st = await getMusicState()
-    running.value = st.running
-    paused.value = st.paused
-    current.value = st.current
-    mode.value = st.mode
-  } catch {
-    /* 后端未就绪，忽略 */
-  }
-}
-
-async function onToggle() {
-  try {
-    if (!running.value) await startFeature('music')
-    else if (paused.value) await musicResume()
-    else await musicPause()
-  } catch (e) {
-    statusText.value = String(e)
-  }
-  refreshState()
-}
-
-async function onNext() {
-  try {
-    await musicNext()
-  } catch (e) {
-    statusText.value = String(e)
-  }
-  refreshState()
-}
-
-async function onPrev() {
-  try {
-    await musicPrev()
-  } catch (e) {
-    statusText.value = String(e)
-  }
-  refreshState()
-}
-
-async function onMode() {
-  const idx = MODES.indexOf(mode.value)
-  const next = MODES[(idx + 1) % MODES.length]
-  try {
-    await setMusicMode(next)
-  } catch (e) {
-    statusText.value = String(e)
-  }
-  refreshState()
-}
-
 async function closeOverlay() {
+  // Keep the window visible if stopping fails, so a failed release is not hidden.
+  if (!await player.stop()) return
+  if (!isTauri()) return
   try {
-    await stopFeature('music')
-  } catch {
-    /* ignore */
-  }
-  try {
-    const { emit } = await import('@tauri-apps/api/event')
     await emit('music-overlay-hidden')
-  } catch {
-    /* 非 Tauri 环境忽略 */
-  }
-  try {
-    const { invoke } = await import('@tauri-apps/api/core')
     await invoke('hide_music_overlay')
-  } catch {
-    /* ignore */
-  }
+  } catch (cause) { player.error = String(cause) }
 }
-
-async function startDrag(e: MouseEvent) {
-  if (e.button !== 0) return
-  try {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window')
-    await getCurrentWindow().startDragging()
-  } catch {
-    /* 非 Tauri 环境忽略 */
-  }
-}
-
-onMounted(() => {
-  closeWs = connectWs({ onStatus: (t) => (statusText.value = t) })
-})
-usePolling(refreshState, 800)
-
-onUnmounted(() => {
-  closeWs?.()
-})
 </script>
 
 <template>
-  <div class="ctl">
-    <div class="topbar" @mousedown="startDrag">
-      <span class="title">{{ title }}</span>
-      <div class="grip" />
-      <button class="close" @mousedown.stop @click="closeOverlay">×</button>
+  <section class="music-overlay">
+    <div class="overlay-heading" @mousedown="startDrag">
+      <span class="live-dot" :class="{ active: player.active }" />
+      <strong :title="title">{{ title }}</strong>
+      <button class="close" title="停止并关闭" aria-label="停止并关闭" @mousedown.stop @click="closeOverlay">×</button>
     </div>
-
-    <div class="buttons">
-      <button class="icon-btn" title="上一曲" @mousedown.stop @click="onPrev">
-        <SkipPrevIcon :size="20" />
-      </button>
-      <button
-        class="icon-btn main"
-        :class="{ playing: running && !paused }"
-        title="播放/暂停"
-        @mousedown.stop
-        @click="onToggle"
-      >
-        <component :is="playIcon" :size="24" />
-      </button>
-      <button class="icon-btn" title="下一曲" @mousedown.stop @click="onNext">
-        <SkipNextIcon :size="20" />
-      </button>
-      <button
-        class="icon-btn"
-        :title="`播放模式：${MODE_NAMES[mode] || mode}`"
-        @mousedown.stop
-        @click="onMode"
-      >
-        <component :is="modeIcon" :size="20" />
-      </button>
+    <div class="overlay-controls">
+      <button title="上一曲" aria-label="上一曲" :disabled="!player.online || player.pending" @mousedown.stop @click="player.previous"><SkipPrevIcon :size="19" /></button>
+      <button class="play" :title="player.paused ? '继续演奏' : player.active ? '暂停' : '播放'" :aria-label="player.paused ? '继续演奏' : player.active ? '暂停' : '播放'" :disabled="!canPlay" @mousedown.stop @click="toggle"><PauseIcon v-if="player.active && !player.paused" :size="23" /><PlayIcon v-else :size="23" /></button>
+      <button title="停止" aria-label="停止" :disabled="!player.online || (!player.active && !player.pending)" @mousedown.stop @click="player.stop"><span class="stop-icon" /></button>
+      <button title="下一曲" aria-label="下一曲" :disabled="!player.online || player.pending" @mousedown.stop @click="player.next"><SkipNextIcon :size="19" /></button>
+      <button :title="MUSIC_MODE_NAMES[player.state?.mode ?? 'sequential']" aria-label="切换播放模式" :disabled="!player.online || player.pending" @mousedown.stop @click="cycleMode"><component :is="modeIcon" :size="18" /></button>
     </div>
-
-    <div class="status">{{ statusText || `${MODE_NAMES[mode] || mode}` }}</div>
-  </div>
+    <div class="timeline"><span>{{ musicTime(player.state?.position_ms ?? 0) }}</span><progress max="100" :value="player.progress" aria-label="演奏进度" /><span>{{ musicTime(player.state?.duration_ms ?? 0) }}</span></div>
+    <div class="overlay-status" :class="{ error: player.error || player.connectionError || player.state?.error }" :title="player.error || player.connectionError || player.state?.error?.message || player.status" aria-live="polite">{{ player.error || player.connectionError || player.state?.error?.message || player.status }}</div>
+  </section>
 </template>
 
 <style scoped>
-.ctl {
-  width: 100%;
-  height: 100%;
-  box-sizing: border-box;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  user-select: none;
-  background: rgba(20, 20, 20, 0.95);
-  border: 1px solid #2a2a2a;
-  border-radius: 10px;
-}
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 18px;
-}
-.title {
-  max-width: 70%;
-  color: #ccc;
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex-shrink: 1;
-}
-.grip {
-  flex: 1;
-  height: 8px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.08);
-  cursor: grab;
-}
-.grip:active {
-  cursor: grabbing;
-}
-.close {
-  width: 20px;
-  height: 20px;
-  border: none;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.12);
-  color: #ccc;
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-.close:hover {
-  background: rgba(245, 108, 108, 0.8);
-  color: #fff;
-}
-.buttons {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-}
-.icon-btn {
-  width: 40px;
-  height: 40px;
-  border: none;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
-  color: #ccc;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.icon-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
-}
-.icon-btn.main {
-  width: 48px;
-  height: 48px;
-  background: rgba(64, 158, 255, 0.92);
-  color: #fff;
-}
-.icon-btn.main.playing {
-  background: rgba(245, 108, 108, 0.92);
-}
-.icon-btn:active {
-  transform: scale(0.95);
-}
-.status {
-  height: 16px;
-  color: #aaa;
-  font-size: 12px;
-  text-align: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+.music-overlay { width: 100%; height: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 9px; overflow: hidden; user-select: none; background: rgba(20, 27, 38, .97); border: 1px solid #3b4e68; border-radius: 12px; color: #ceddef; font-family: 'Segoe UI', system-ui, sans-serif; }
+.overlay-heading { display: flex; align-items: center; gap: 7px; height: 19px; cursor: grab; }.overlay-heading strong { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }.live-dot { width: 5px; height: 5px; border-radius: 50%; background: #64748b; }.live-dot.active { background: #83cdb0; }.close { width: 21px; height: 21px; border: 0; border-radius: 6px; background: transparent; color: #899eb9; cursor: pointer; font-size: 18px; }.close:hover { background: #4a2f3b; color: #f1a5b3; }
+.overlay-controls { display: flex; align-items: center; justify-content: center; gap: 9px; flex: 1; min-height: 42px; }.overlay-controls button { display: grid; place-items: center; border: 0; border-radius: 50%; width: 33px; height: 33px; background: #2b3a50; color: #c1d3e9; cursor: pointer; }.overlay-controls button.play { width: 42px; height: 42px; background: #78ace8; color: #102238; }.overlay-controls button:hover { filter: brightness(1.15); }.overlay-controls button:disabled { opacity: .4; cursor: not-allowed; }.stop-icon { width: 11px; height: 11px; border-radius: 2px; background: currentColor; }.timeline { display: flex; align-items: center; gap: 8px; font-size: 9px; color: #7f98b7; }.timeline progress { appearance: none; flex: 1; min-width: 0; height: 3px; border: 0; border-radius: 4px; background: #32435b; overflow: hidden; }.timeline progress::-webkit-progress-bar { background: #32435b; }.timeline progress::-webkit-progress-value { background: #83b5ed; }.overlay-status { height: 15px; font-size: 10px; color: #91aac8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }.overlay-status.error { color: #f0abb2; }button:focus-visible { outline: 2px solid #b2d5ff; outline-offset: 2px; }
 </style>

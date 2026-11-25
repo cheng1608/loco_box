@@ -2,15 +2,20 @@
 import { onUnmounted, ref } from 'vue'
 import { listFeatures, startFeature, stopFeature } from './api/client'
 import { usePolling } from './composables/usePolling'
+import { useWindowDrag } from './composables/useWindowDrag'
 
 const running = ref(false)
 const cooldown = ref(0)
+const pending = ref(false)
+const error = ref('')
+const startDrag = useWindowDrag()
 let cdTimer: number | undefined
+let disposed = false
 
 async function refresh() {
   try {
     const { features } = await listFeatures()
-    running.value = features.find((f) => f.id === 'throw')?.running ?? false
+    if (!disposed && !pending.value) running.value = features.find((f) => f.id === 'throw')?.running ?? false
   } catch {
     /* 后端未就绪，忽略 */
   }
@@ -29,15 +34,23 @@ function startCooldown() {
 }
 
 async function toggle() {
-  if (cooldown.value > 0) return
+  if (cooldown.value > 0 || pending.value) return
+  pending.value = true
+  error.value = ''
   try {
-    if (running.value) await stopFeature('throw')
-    else await startFeature('throw')
-  } catch {
-    /* ignore */
+    if (running.value) {
+      await stopFeature('throw')
+      running.value = false
+    } else {
+      const result = await startFeature('throw')
+      running.value = result.running
+    }
+    if (!disposed) startCooldown()
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    pending.value = false
   }
-  refresh()
-  startCooldown()
 }
 
 async function closeOverlay() {
@@ -55,19 +68,10 @@ async function closeOverlay() {
   }
 }
 
-async function startDrag(e: MouseEvent) {
-  if (e.button !== 0) return
-  try {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window')
-    await getCurrentWindow().startDragging()
-  } catch {
-    /* 非 Tauri 环境忽略 */
-  }
-}
-
 usePolling(refresh, 800)
 
 onUnmounted(() => {
+  disposed = true
   if (cdTimer) window.clearInterval(cdTimer)
 })
 </script>
@@ -82,12 +86,13 @@ onUnmounted(() => {
     <button
       class="btn"
       :class="{ running }"
-      :disabled="cooldown > 0"
+      :disabled="pending || cooldown > 0"
       @mousedown.stop
       @click="toggle"
     >
       {{ cooldown > 0 ? `冷却中 ${cooldown}s` : running ? '停止丢球' : '丢球' }}
     </button>
+    <div v-if="error" class="error" role="alert">{{ error }}</div>
   </div>
 </template>
 
@@ -163,4 +168,5 @@ onUnmounted(() => {
 .btn:not(:disabled):active {
   transform: scale(0.97);
 }
+.error { color: #f0abb2; font-size: 11px; overflow-wrap: anywhere; }
 </style>

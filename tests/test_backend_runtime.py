@@ -178,12 +178,14 @@ class ThrowLifecycleTests(unittest.TestCase):
         sent = []
         first_key = threading.Event()
 
-        def send(key, hold):
+        def send(key, hold, owner):
+            self.assertEqual(owner, "throw")
             sent.append(key)
             first_key.set()
             return True
 
-        controller = SimpleNamespace(is_connected=lambda: True, send=send)
+        controller = SimpleNamespace(is_connected=lambda: True, send=send,
+                                     acquire=lambda owner: True, release=Mock())
         feature = ThrowFeature(FeatureContext(controller, Mock(), Mock()))
         feature.start({"mouse_hold": 200, "mouse_gap": 30000})
         try:
@@ -194,6 +196,7 @@ class ThrowLifecycleTests(unittest.TestCase):
         self.assertFalse(feature._thread.is_alive())
         self.assertFalse(feature.is_running())
         self.assertEqual(sent, ["MOUSE_LEFT"])
+        controller.release.assert_called_once_with("throw")
 
 
 class DesktopRunnerTests(unittest.TestCase):

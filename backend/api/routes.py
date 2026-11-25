@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from backend import state
-from backend.core.config import SCORES_DIR
+from backend.core.arduino import DeviceBusyError
 from loco_box.serial_bridge import SerialBridge
 
 router = APIRouter(prefix="/api")
@@ -31,18 +31,6 @@ class ConfigPayload(BaseModel):
     config: Dict[str, Any]
 
 
-class ParsePayload(BaseModel):
-    score: str = ""
-
-
-class SelectPayload(BaseModel):
-    name: str
-
-
-class ModePayload(BaseModel):
-    mode: str
-
-
 # ── 基础 ──────────────────────────────────────────
 @router.get("/health")
 def health(request: Request):
@@ -60,6 +48,8 @@ def status():
     return {
         "arduino_connected": state.arduino.is_connected(),
         "port": state.arduino.port(),
+        "owner": state.arduino.current_owner(),
+        "capabilities": state.arduino.capabilities(),
     }
 
 
@@ -81,7 +71,11 @@ def connect_arduino(payload: ConnectPayload):
 
 @router.post("/arduino/disconnect")
 def disconnect_arduino():
-    state.arduino.disconnect()
+    # Invalidate workers before closing their persistent connection.
+    for feature in state.features.values():
+        if feature.requires_arduino:
+            feature.stop()
+    state.arduino.disconnect(force=True)
     state.bus.publish_status("Arduino 已断开")
     return {"ok": True}
 
@@ -90,13 +84,23 @@ def disconnect_arduino():
 def send_key(payload: KeyPayload):
     hold_ms = payload.hold_ms if payload.hold_ms is not None else 50
     ok = state.arduino.press_key(payload.key, hold_ms)
+    _check_manual_result(ok)
     return {"ok": ok}
 
 
 @router.post("/mouse")
 def send_mouse(payload: MousePayload):
     ok = state.arduino.send(payload.button)
+    _check_manual_result(ok)
     return {"ok": ok}
+
+
+def _check_manual_result(ok: bool) -> None:
+    if not ok:
+        owner = state.arduino.current_owner()
+        if owner and owner != "manual":
+            raise HTTPException(409, "设备正在被其他功能使用，请先停止该功能")
+        raise HTTPException(503, state.arduino.last_error or "Arduino 未连接或按键发送失败")
 
 
 # ── 功能 ──────────────────────────────────────────
@@ -127,7 +131,7 @@ def get_feature_config(feature_id: str):
 @router.put("/features/{feature_id}/config")
 def set_feature_config(feature_id: str, payload: ConfigPayload):
     _get_feature(feature_id)
-    state.config.set(feature_id, payload.config)
+    state.config.update(feature_id, payload.config)
     return {"ok": True}
 
 
@@ -137,6 +141,8 @@ def start_feature(feature_id: str):
     cfg = {**f.default_config(), **state.config.get(feature_id)}
     try:
         f.start(cfg)
+    except DeviceBusyError as exc:
+        raise HTTPException(409, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"ok": True, "running": f.is_running()}
@@ -160,123 +166,12 @@ def capture_box_template():
         raise HTTPException(400, str(exc))
 
 
-# ── 自动演奏（简谱文件） ──────────────────────────
-@router.get("/music/scores")
-def list_music_scores():
-    SCORES_DIR.mkdir(parents=True, exist_ok=True)
-    names = sorted(
-        p.name for p in SCORES_DIR.iterdir()
-        if p.is_file() and p.suffix.lower() == ".txt"
-    )
-    return {"scores": names}
-
-
-@router.get("/music/scores/{name}")
-def read_music_score(name: str):
-    safe = os.path.basename(name)
-    if not safe or safe != name or not safe.lower().endswith(".txt"):
-        raise HTTPException(404, "文件不存在")
-    path = SCORES_DIR / safe
-    if not path.is_file():
-        raise HTTPException(404, "文件不存在")
-    try:
-        content = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise HTTPException(500, str(exc))
-    return {"name": safe, "content": content}
-
-
-@router.post("/music/open_folder")
-def open_music_scores_folder():
-    SCORES_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        os.startfile(str(SCORES_DIR))  # type: ignore[attr-defined]
-    except OSError as exc:
-        raise HTTPException(500, str(exc))
-    return {"ok": True}
-
-
-@router.post("/music/parse")
-def parse_music_score(payload: ParsePayload):
-    f = state.features.get("music")
-    if f is None:
-        raise HTTPException(404, "功能不存在")
-    notes = f.parse_score(payload.score)
-    return {
-        "count": len(notes),
-        "notes": [{"key": k, "pause": p} for k, p in notes],
-    }
-
-
-def _get_music():
-    f = state.features.get("music")
-    if f is None:
-        raise HTTPException(404, "功能不存在")
-    return f
-
-
-@router.get("/music/state")
-def music_state():
-    f = _get_music()
-    return {
-        "playlist": f.playlist(),
-        "current": f.current_song(),
-        "mode": f.mode(),
-        "running": f.is_running(),
-        "paused": f.is_paused(),
-    }
-
-
-@router.post("/music/select")
-def music_select(payload: SelectPayload):
-    f = _get_music()
-    ok = f.select_song(payload.name)
-    return {"ok": ok}
-
-
-@router.post("/music/next")
-def music_next():
-    f = _get_music()
-    f.next_track()
-    return {"ok": True}
-
-
-@router.post("/music/prev")
-def music_prev():
-    f = _get_music()
-    f.prev_track()
-    return {"ok": True}
-
-
-@router.post("/music/mode")
-def music_mode(payload: ModePayload):
-    f = _get_music()
-    ok = f.set_mode(payload.mode)
-    if not ok:
-        raise HTTPException(400, f"未知播放模式：{payload.mode}")
-    return {"ok": True}
-
-
-@router.post("/music/pause")
-def music_pause():
-    f = _get_music()
-    f.pause()
-    return {"ok": True}
-
-
-@router.post("/music/resume")
-def music_resume():
-    f = _get_music()
-    f.resume()
-    return {"ok": True}
-
-
 # ── 区域框选 ──────────────────────────────────────
 @router.post("/region/select")
 def select_region_endpoint():
     from loco_box.region_selector import select_region
 
-    if any(f.is_running() for f in state.features.values()):
+    if any(f.blocks_region_selection and f.is_running() for f in state.features.values()):
         raise HTTPException(409, "请先停止当前运行的功能再框选")
 
     result: Dict[str, Any] = {}

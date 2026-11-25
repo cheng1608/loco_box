@@ -3,7 +3,7 @@
 聚焦本窗口后，按对应字母键即发出对应音效；也用于接收 Arduino 自动演奏
 发送的按键（HID 敲到焦点窗口），验证 midi2score 生成的谱面是否正确。
 
-键位（与 backend/features/music.py 的 NOTE_TO_KEY 一致，大小写不敏感）：
+键位（与 loco_box/handpan.py 的 NOTE_TO_KEY 一致，大小写不敏感）：
     低音6 -> B；中音3/4/5/6/7 -> F/G/H/J/K；高音1/2/3 -> T/Y/U。
 
 用法：
@@ -13,6 +13,8 @@
 """
 
 import os
+import sys
+from pathlib import Path
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")  # 隐藏 pygame 启动横幅
 
@@ -21,12 +23,10 @@ import tkinter as tk
 import numpy as np
 import pygame
 
-# ── 音符 ↔ 键盘 映射（与 music.py 的 NOTE_TO_KEY 一致）──────────
-NOTE_TO_KEY = {
-    "L6": "B",
-    "M3": "F", "M4": "G", "M5": "H", "M6": "J", "M7": "K",
-    "H1": "T", "H2": "Y", "H3": "U",
-}
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from loco_box.handpan import NOTE_TO_KEY
+
 # 键盘小写字母 -> 音名（Arduino 敲出的是小写、不带 Shift）
 KEY_TO_NOTE = {k.lower(): n for n, k in NOTE_TO_KEY.items()}
 
